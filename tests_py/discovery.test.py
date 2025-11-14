@@ -43,6 +43,7 @@ class TestEagerImportSubmodules:
             'docnote_extract_testpkg._hand_rolled.subclasses_3p_class',
             'docnote_extract_testpkg._hand_rolled.noteworthy',
             'docnote_extract_testpkg._hand_rolled.relativity',
+            'docnote_extract_testpkg._hand_rolled.uses_dataclasses',
             'docnote_extract_testpkg._hand_rolled.uses_import_names',}
 
     @purge_cached_testpkg_modules
@@ -86,6 +87,7 @@ class TestEagerImportSubmodules:
             'docnote_extract_testpkg._hand_rolled.subclasses_3p_class',
             'docnote_extract_testpkg._hand_rolled.noteworthy',
             'docnote_extract_testpkg._hand_rolled.relativity',
+            'docnote_extract_testpkg._hand_rolled.uses_dataclasses',
             'docnote_extract_testpkg._hand_rolled.uses_import_names',}
 
 

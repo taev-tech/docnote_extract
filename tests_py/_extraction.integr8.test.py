@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from dataclasses import is_dataclass
 from importlib.machinery import ModuleSpec
 from unittest.mock import patch
 
@@ -330,3 +331,42 @@ class TestExtractionFinderLoader:
         assert isinstance(to_inspect.FILE, str)
         assert isinstance(to_inspect.SPEC, ModuleSpec)
         assert to_inspect.NAME == mod_name
+
+    @mocked_extraction_discovery([
+        'docnote_extract_testpkg',
+        'docnote_extract_testpkg._hand_rolled',
+        'docnote_extract_testpkg._hand_rolled.uses_dataclasses'])
+    @purge_cached_testpkg_modules
+    def test_dataclass_docstring_strip(self):
+        """Extracting values from dataclasses should strip the
+        automatically-generated docstring.
+        """
+        floader = _ExtractionFinderLoader(
+            frozenset({'docnote_extract_testpkg'}),
+            nostub_packages=frozenset({'pytest'}),)
+
+        retval = floader.discover_and_extract()
+
+        mod_name = 'docnote_extract_testpkg._hand_rolled.uses_dataclasses'
+        to_inspect = retval[mod_name]
+        assert is_dataclass(to_inspect.DataclassWithoutDocstring)
+        assert to_inspect.DataclassWithoutDocstring.__doc__ is None
+
+    @mocked_extraction_discovery([
+        'docnote_extract_testpkg',
+        'docnote_extract_testpkg._hand_rolled',
+        'docnote_extract_testpkg._hand_rolled.uses_dataclasses'])
+    @purge_cached_testpkg_modules
+    def test_dataclass_with_kw_only_works(self):
+        """Dataclasses making use of kw_only must extract without
+        error.
+        """
+        floader = _ExtractionFinderLoader(
+            frozenset({'docnote_extract_testpkg'}),
+            nostub_packages=frozenset({'pytest'}),)
+
+        retval = floader.discover_and_extract()
+
+        mod_name = 'docnote_extract_testpkg._hand_rolled.uses_dataclasses'
+        to_inspect = retval[mod_name]
+        assert is_dataclass(to_inspect.DataclassWithKwOnlyAndDefaults)

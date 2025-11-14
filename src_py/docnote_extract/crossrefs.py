@@ -19,6 +19,7 @@ from docnote import Note
 class SyntacticTraversalType(Enum):
     TYPEVAR = 'typevar'
     ANONYMOUS_OVERLOAD = 'overload'
+    ANONYMOUS_IMPORT = '<unknown imported object>'
 
 
 @dataclass(slots=True, frozen=True)
@@ -128,7 +129,8 @@ class Crossref:
             cls,
             obj: Any,
             *,
-            typevars: Mapping[TypeVar, Crossref]
+            typevars: Mapping[TypeVar, Crossref],
+            allow_fallback: bool = False
             ) -> Crossref:
         """Attempts to create a crossref from the passed object. This
         can only work conditionally; generally only types, functions,
@@ -182,9 +184,29 @@ class Crossref:
                 traversals=())
 
         else:
-            raise TypeError(
-                'Cannot create a crossref from that object without further '
-                + 'information!', obj)
+            if allow_fallback:
+                return cls.make_fallback(obj)
+            else:
+                raise TypeError(
+                    'Cannot create a crossref from that object without '
+                    + 'further information!', obj)
+
+    @classmethod
+    def make_fallback(
+            cls,
+            obj: Any
+            ) -> Crossref:
+        """There are some situations where we'd rather give a fallback,
+        less-useful crossref instead of breaking the entire extraction.
+        In these cases, we use this to do our best at constructing
+        something useful.
+        """
+        return cls(
+            module_name=None,
+            toplevel_name=None,
+            traversals=(SyntacticTraversal(
+                SyntacticTraversalType.ANONYMOUS_IMPORT,
+                repr(obj)),))
 
 
 class Crossreffed(Protocol):

@@ -532,10 +532,10 @@ def _extract_special_forms(origin: Any) -> _TypeSpecSpecialForms | None:
 
 @dataclass(slots=True, frozen=True)
 class TypeSpec:
-    """This is used as a container for ``NormalizedType``s. At the
-    moment, it's pretty simple: a tree that contains a single normalized
-    type or normalized union type. If and when python adds intersection
-    types, it will be expanded to include those.
+    """This is used as a container for ``NormalizedType``s, which stores
+    information about any applied special forms for the type (ex
+    ``ClassVar``, ``Final``, etc). Therefore it is only useful as a
+    wrapper in contexts where those special forms are also valid.
 
     **These are not meant to be constructed directly.** Instead, use the
     ``from_typehint`` method to create them.
@@ -608,7 +608,12 @@ class TypeSpec:
                 typehint = cast(type, typehint)
 
                 normtype = NormalizedConcreteType(
-                    Crossref.from_object(typehint, typevars=typevars))
+                    Crossref.from_object(
+                        typehint,
+                        typevars=typevars,
+                        # Some stdlib sentinels require fallbacks, ex KW_ONLY
+                        # from dataclasses
+                        allow_fallback=True))
 
             # ---------------- Special-case generics
             elif origin is Literal:
