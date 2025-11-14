@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import logging
 import sys
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from enum import Enum
 from functools import partial
+from functools import wraps
 from importlib import import_module
 from importlib import reload as reload_module
 from importlib.abc import Loader
@@ -249,6 +251,12 @@ class _ExtractionFinderLoader(Loader):
                 logger.info(
                     'Re-execing module for inspection: %s', module_name)
 
+                # Putting the partially-completed module into sys.modules
+                # prevents other things (some stdlib code -- ex dataclasses --
+                # does WEIRD stuff with imports) from getting a stubbed ref
+                # to the module we're inspecting
+                stub_module = sys.modules.pop(module_name)
+                sys.modules[module_name] = extracted_module
                 # This allows us to also get references hidden behind circular
                 # imports
                 typing.TYPE_CHECKING = True
@@ -256,6 +264,7 @@ class _ExtractionFinderLoader(Loader):
                     exec(module_source, extracted_module.__dict__)  # noqa: S102
                 finally:
                     typing.TYPE_CHECKING = False
+                    sys.modules[module_name] = stub_module
                     self.inspected_modules.add(module_name)
 
             extracted_module._docnote_extract_import_tracking_registry = (
@@ -377,6 +386,12 @@ class _ExtractionFinderLoader(Loader):
         prehook_module_names = sorted(sys.modules)
         for prehook_module_name in prehook_module_names:
             package_name, _, _ = prehook_module_name.partition('.')
+
+            if package_name == 'dataclasses':
+                self.module_stash_prehook['dataclasses'] = dataclasses
+                patched_dataclasses = ModuleType('dataclasses')
+                patched_dataclasses.__getattr__ = _patched_dataclass_getattr
+                sys.modules['dataclasses'] = patched_dataclasses
 
             if (
                 package_name not in sys.stdlib_module_names
@@ -1090,3 +1105,28 @@ def is_module_post_extraction(
     return (
         isinstance(module, ModuleType)
         and hasattr(module, '_docnote_extract_import_tracking_registry'))
+
+
+@wraps(dataclass)
+def _dataclass_decorator_wrapper(maybe_cls: type | None = None, **kwargs):
+    if maybe_cls is None:
+        def decorator[T: type](cls: T) -> T:
+            docstr_before = cls.__doc__
+            dataclassed = dataclass(**kwargs)(cls)
+            dataclassed.__doc__ = docstr_before
+            return dataclassed
+
+        return decorator
+
+    cls = maybe_cls
+    docstr_before = cls.__doc__
+    dataclassed = dataclass(cls)
+    dataclassed.__doc__ = docstr_before
+    return dataclassed
+
+
+def _patched_dataclass_getattr(name: str):
+    if name == 'dataclass':
+        return _dataclass_decorator_wrapper
+    else:
+        return getattr(dataclasses, name)
