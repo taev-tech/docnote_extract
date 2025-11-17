@@ -283,7 +283,7 @@ def create_variable_summary(
             logger.warning(
                 'Type inference is not supported for crossreffed variables. '
                 + 'For a non-None typespec, you must explicitly declare the '
-                + 'type of %s', src_obj)
+                + 'type of %s (%s)', name_in_parent, src_obj)
             # I'm punting on this because it's a huge can of worms. For now,
             # we don't support type inference here; you really MUST declare
             # it as an explicit type

@@ -39,6 +39,21 @@ def finnr_docs() -> Docnotes[SummaryMetadata]:
     return gather(['finnr'])
 
 
+@pytest.fixture(scope='module')
+def templatey_docs() -> Docnotes[SummaryMetadata]:
+    """We want to do a bunch of spot checks against templatey, but
+    we only need to gather it once. Hence, we have a module-scoped
+    fixture that returns the gathered ``Docnotes``.
+    """
+    return gather(
+        ['templatey'],
+        special_reftype_markers={
+            Crossref(
+                module_name='dcei',
+                toplevel_name='ext_dataclass'):
+            ReftypeMarker.DECORATOR})
+
+
 class TestGatheringE2EFinnr:
     """Runs end-to-end tests based on the finnr package.
     """
@@ -149,3 +164,18 @@ class TestGatheringE2EFinnr:
             primary=Crossref(
                 module_name='finnr.currency', toplevel_name='CurrencySet'),
             params=())
+
+
+class TestGatheringE2ETemplatey:
+    """Runs end-to-end tests based on the templatey package.
+    """
+
+    def test_expected_summaries(
+            self, templatey_docs: Docnotes[SummaryMetadata]):
+        """The gathered result must contain the expected number of
+        summaries, and it must contain the summary tree root.
+        """
+        assert len(templatey_docs.summaries) == 1
+        (pkg_name, tree_root), = templatey_docs.summaries.items()
+        assert pkg_name == 'templatey'
+        assert isinstance(tree_root, SummaryTreeNode)
