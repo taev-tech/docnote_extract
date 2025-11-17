@@ -82,6 +82,7 @@ repl = [
 test = [
     { name = "docnote-extract-testpkg" },
     { name = "docnote-extract-testutils" },
+    { name = "finnr" },
     { name = "pytest" },
     { name = "templatey" },
 ]
@@ -99,6 +100,7 @@ repl = [
 test = [
     { name = "docnote-extract-testpkg", editable = "sidecars_py/docnote_extract_testpkg" },
     { name = "docnote-extract-testutils", editable = "sidecars_py/docnote_extract_testutils" },
+    { name = "finnr", specifier = ">=2025.9.5.0" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "templatey", specifier = ">=2025.11.13.0" },
 ]
@@ -114,6 +116,18 @@ source = { editable = "sidecars_py/docnote_extract_testpkg_factory" }
 [[package]]
 name = "docnote-extract-testutils"
 source = { editable = "sidecars_py/docnote_extract_testutils" }
+
+[[package]]
+name = "finnr"
+version = "2025.9.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "docnote" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/68/32/ea98d5f880ac0d7257361afc43951b1471106dd77cc42839eb3a56e31dbf/finnr-2025.9.5.0.tar.gz", hash = "sha256:ef43ec14e2dcdb905e54961e06a98b2428affca0f088247a357eb3831cb29345", size = 18011, upload-time = "2025-09-05T16:55:17.679Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/75/5cb6cbf653aa1f511b3e2346d36218315ee314d0ec450decc0949c194f4a/finnr-2025.9.5.0-py3-none-any.whl", hash = "sha256:1fe14ce27208d3f07f2d414722c754cc5e3f9ed2003e823803f57dfd1da96752", size = 19173, upload-time = "2025-09-05T16:55:16.565Z" },
+]
 
 [[package]]
 name = "h11"

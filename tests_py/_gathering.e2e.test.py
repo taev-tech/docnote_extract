@@ -30,24 +30,34 @@ def testpkg_docs() -> Docnotes[SummaryMetadata]:
             ReftypeMarker.METACLASS})
 
 
-class TestGatheringE2E:
+@pytest.fixture(scope='module')
+def finnr_docs() -> Docnotes[SummaryMetadata]:
+    """We want to do a bunch of spot checks against finnr, but
+    we only need to gather it once. Hence, we have a module-scoped
+    fixture that returns the gathered ``Docnotes``.
+    """
+    return gather(['finnr'])
 
-    def test_expected_summaries(self, testpkg_docs: Docnotes[SummaryMetadata]):
+
+class TestGatheringE2EFinnr:
+    """Runs end-to-end tests based on the finnr package.
+    """
+
+    def test_expected_summaries(self, finnr_docs: Docnotes[SummaryMetadata]):
         """The gathered result must contain the expected number of
         summaries, and it must contain the summary tree root.
         """
-        assert len(testpkg_docs.summaries) == 1
-        (pkg_name, tree_root), = testpkg_docs.summaries.items()
-        assert pkg_name == 'docnote_extract_testpkg'
+        assert len(finnr_docs.summaries) == 1
+        (pkg_name, tree_root), = finnr_docs.summaries.items()
+        assert pkg_name == 'finnr'
         assert isinstance(tree_root, SummaryTreeNode)
 
-    def test_spotcheck_money(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_spotcheck_money(self, finnr_docs: Docnotes[SummaryMetadata]):
         """A spot-check of the finnr money module must match the
         expected results.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        money_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.money')
+        (_, tree_root), = finnr_docs.summaries.items()
+        money_mod_node = tree_root.find('finnr.money')
         money_mod_summary = money_mod_node.module_summary
         resulting_names = {
             child.name
@@ -55,14 +65,13 @@ class TestGatheringE2E:
             if child.metadata.included}
         assert resulting_names == {'amount_getter', 'Money'}
 
-    def test_spotcheck_currency(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_spotcheck_currency(self, finnr_docs: Docnotes[SummaryMetadata]):
         """A spot-check of the finnr currency module must match the
         expected results. This is particularly concerned with the
         typespec values.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        currency_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.currency')
+        (_, tree_root), = finnr_docs.summaries.items()
+        currency_mod_node = tree_root.find('finnr.currency')
         currency_mod_summary = currency_mod_node.module_summary
         currency_summary = currency_mod_summary / GetattrTraversal('Currency')
         assert isinstance(currency_summary, ClassSummary)
@@ -98,13 +107,12 @@ class TestGatheringE2E:
         assert literal_value.toplevel_name == 'Singleton'
         assert literal_value.traversals == (GetattrTraversal('UNKNOWN'),)
 
-    def test_currencyset_call(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_currencyset_call(self, finnr_docs: Docnotes[SummaryMetadata]):
         """The ``CurrencySet.__call__`` summary must have a signature
         and not be disowned.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        currency_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.currency')
+        (_, tree_root), = finnr_docs.summaries.items()
+        currency_mod_node = tree_root.find('finnr.currency')
         currency_mod_summary = currency_mod_node.module_summary
         call_summary = (
             currency_mod_summary
@@ -120,14 +128,13 @@ class TestGatheringE2E:
         assert not signature_summary.metadata.disowned
         assert signature_summary.metadata.to_document
 
-    def test_spotcheck_iso(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_spotcheck_iso(self, finnr_docs: Docnotes[SummaryMetadata]):
         """A spot-check of the finnr iso module must match the
         expected results. In particular, the mint must be correctly
         assigned to the module, and not disowned.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        iso_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.iso')
+        (_, tree_root), = finnr_docs.summaries.items()
+        iso_mod_node = tree_root.find('finnr.iso')
         iso_mod_summary = iso_mod_node.module_summary
         resulting_names = {
             child.name
