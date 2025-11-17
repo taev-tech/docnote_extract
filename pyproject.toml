@@ -15,6 +15,7 @@ test = [
     "docnote_extract_testutils",
     "docnote_extract_testpkg",
     "pytest>=8.4.1",
+    "templatey>=2025.11.13.0",
 ]
 
 lint = [
