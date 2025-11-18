@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Callable
 from dataclasses import dataclass
 from enum import Enum
 from types import ModuleType
@@ -393,6 +393,51 @@ def make_metaclass_crossreffed(
         # metadata for the _docnote_extract_metaclass attribute on the final
         # class object
         {'_docnote_extract_metadata': metadata})
+
+
+def make_decorator_crossreffed[T: Callable | type](
+        *,
+        module: str,
+        name: str
+        ) -> Callable:
+    """Makes a fake first-order decorator that can be used as a stub.
+    Note that "module" and "name" are the module and toplevel name that
+    the decorator is (theoretically, for the real dependency) defined
+    in, and NOT the module and toplevel name for the function or type
+    being decorated.
+
+    TODO: it would be nice if we could also somehow make a note of the
+    fact that the callable or type was decorated, but... we're punting
+    on that for now, because it's a pretty big can of worms (especailly
+    because of higher-order decorators).
+    """
+    def decorator(func_or_type: T | object, *args, **kwargs):
+        return func_or_type
+
+    return decorator
+
+
+def make_decorator_2o_crossreffed[T: Callable | type](
+        *,
+        module: str,
+        name: str
+        ) -> Callable:
+    """Makes a fake first-order decorator that can be used as a stub.
+    Note that "module" and "name" are the module and toplevel name that
+    the decorator is (theoretically, for the real dependency) defined
+    in, and NOT the module and toplevel name for the function or type
+    being decorated.
+
+    TODO: it would be nice if we could also somehow make a note of the
+    fact that the callable or type was decorated, but... we're punting
+    on that for now, because it's a pretty big can of worms (especailly
+    because of higher-order decorators).
+    """
+    def decorator(*args, **kwargs):
+        def decorator_2o(func_or_type: T | object, *args, **kwargs):
+            return func_or_type
+        return decorator_2o
+    return decorator
 
 
 @overload

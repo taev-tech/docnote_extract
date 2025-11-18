@@ -6,6 +6,7 @@ import logging
 import sys
 import typing
 from collections import defaultdict
+from collections.abc import Collection
 from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -32,6 +33,8 @@ from docnote import ReftypeMarker
 from docnote_extract._module_tree import ModuleTreeNode
 from docnote_extract.crossrefs import Crossref
 from docnote_extract.crossrefs import make_crossreffed
+from docnote_extract.crossrefs import make_decorator_2o_crossreffed
+from docnote_extract.crossrefs import make_decorator_crossreffed
 from docnote_extract.crossrefs import make_metaclass_crossreffed
 from docnote_extract.discovery import discover_all_modules
 from docnote_extract.discovery import find_special_reftypes
@@ -98,15 +101,9 @@ class _ExtractionFinderLoader(Loader):
 
     _: KW_ONLY
 
-    # See note in ``gather`` for explanations of these three config-able
-    # parameters
     special_reftype_markers: dict[Crossref, ReftypeMarker] = field(
         default_factory=dict)
-    # Note: full module name
-    nostub_firstparty_modules: frozenset[str] = field(
-        default_factory=frozenset)
-    # Note: root package, not individual modules
-    nostub_packages: frozenset[str] = field(default_factory=frozenset)
+    stubs_config: StubsConfig
 
     module_stash_prehook: dict[str, ModuleType] = field(
         default_factory=dict, repr=False)
@@ -200,9 +197,11 @@ class _ExtractionFinderLoader(Loader):
         """
         for fullname, module in sys.modules.items():
             package_name, _, _ = fullname.partition('.')
+            use_stub_strategy = self.stubs_config.use_stub_strategy(fullname)
             if (
                 package_name in self.firstparty_packages
-                or package_name in self.nostub_packages
+                # Note that this excludes stdlib and other bypasses
+                or use_stub_strategy is False
             ):
                 self.module_stash_nostub_raw[fullname] = module
 
@@ -331,10 +330,12 @@ class _ExtractionFinderLoader(Loader):
         # Note: order doesn't matter here, since we're bypassing imports
         # entirely.
         for module_name in firstparty_names:
-            if module_name in self.nostub_firstparty_modules:
-                target_module = self.module_stash_tracked[module_name]
-            else:
+            # Note: simple truthiness check works here because we already
+            # limited ourselves to firstparty packages
+            if self.stubs_config.use_stub_strategy(module_name):
                 target_module = self.module_stash_stubbed[module_name]
+            else:
+                target_module = self.module_stash_tracked[module_name]
 
             sys.modules[module_name] = target_module
 
@@ -393,28 +394,14 @@ class _ExtractionFinderLoader(Loader):
                 patched_dataclasses.__getattr__ = _patched_dataclass_getattr
                 sys.modules['dataclasses'] = patched_dataclasses
 
-            if (
-                package_name not in sys.stdlib_module_names
-                and package_name not in NOHOOK_PACKAGES
-            ):
-                logger.debug('Stashing prehook module %s', prehook_module_name)
+            stub_strategy = self.stubs_config.use_stub_strategy(
+                prehook_module_name)
 
-                # This is purely to save us needing to reimport the package
-                # to build out a raw package for use during the exploration
-                # phase. The only difference is that we're not popping it;
-                # we're JUST stashing it so it can be restored after
-                # uninstalling the import hook.
-                if (
-                    package_name in self.nostub_packages
-                    or package_name in self.firstparty_packages
-                ):
-                    prehook_module = sys.modules[prehook_module_name]
-
-                else:
-                    logger.debug(
-                        'Popping %s from sys.modules for stash',
-                        prehook_module_name)
-                    prehook_module = sys.modules.pop(prehook_module_name)
+            if stub_strategy is not None:
+                logger.debug(
+                    'Popping %s from sys.modules for stash',
+                    prehook_module_name)
+                prehook_module = sys.modules.pop(prehook_module_name)
 
                 self.module_stash_prehook[prehook_module_name] = prehook_module
 
@@ -457,10 +444,12 @@ class _ExtractionFinderLoader(Loader):
                 module_name = name_node.fullname
                 nostub_module = self.module_stash_nostub_raw[module_name]
 
-                if module_name in self.nostub_firstparty_modules:
-                    target_module = self.module_stash_tracked[module_name]
-                else:
+                # Note: simple truthiness check works here because we already
+                # limited ourselves to firstparty packages
+                if self.stubs_config.use_stub_strategy(module_name):
                     target_module = self.module_stash_stubbed[module_name]
+                else:
+                    target_module = self.module_stash_tracked[module_name]
 
                 # Note: we ONLY want to do this for modules that define an
                 # __all__. If you're doing star intra-project starred imports
@@ -478,10 +467,12 @@ class _ExtractionFinderLoader(Loader):
                 # the parent.
                 for child_node in name_node.children.values():
                     child_name = child_node.fullname
-                    if child_name in self.nostub_firstparty_modules:
-                        child_module = self.module_stash_tracked[child_name]
-                    else:
+                    # Note: simple truthiness check works here because we
+                    # already limited ourselves to firstparty packages
+                    if self.stubs_config.use_stub_strategy(child_name):
                         child_module = self.module_stash_stubbed[child_name]
+                    else:
+                        child_module = self.module_stash_tracked[child_name]
 
                     setattr(
                         target_module,
@@ -499,17 +490,12 @@ class _ExtractionFinderLoader(Loader):
         ++  what strategy we're going to take for loading
         etc.
         """
+        stub_strategy = self.stubs_config.use_stub_strategy(fullname)
         base_package, *_ = fullname.split('.')
-
-        # Note that base_package is correct here; stdlib doesn't add in
-        # every submodule.
-        if base_package in sys.stdlib_module_names:
-            logger.debug('Bypassing wrapping for stdlib module %s.', fullname)
-            return None
-        if base_package in NOHOOK_PACKAGES:
+        if stub_strategy is None:
             logger.debug(
-                'Bypassing tracker wrapping for %s via hard-coded third party '
-                + 'nohook package %s',
+                'Bypassing wrapping for %s, either as stdlib module or via '
+                + 'hard-coded third party nohook package %s',
                 fullname, base_package)
             return None
 
@@ -517,10 +503,9 @@ class _ExtractionFinderLoader(Loader):
         # stub package as long as the import hook is installed, regardless of
         # extraction phase. Otherwise, we'd need them to be installed in the
         # docs virtualenv, reftypes would never be generated, etc etc etc.
-        if (
-            base_package not in self.firstparty_packages
-            and base_package not in self.nostub_packages
-        ):
+        # Note: simple truthiness works here because we already filtered out
+        # the Nones (just above!)
+        if base_package not in self.firstparty_packages and stub_strategy:
             logger.debug('Will return stub spec for %s', fullname)
             # We don't need any loader state here; we're just going to stub it
             # completely, so we can simply return a plain spec.
@@ -581,21 +566,27 @@ class _ExtractionFinderLoader(Loader):
         # first, because you might have a nostub firstparty module under
         # inspection, and we need to short-circuit the other checks.
         if fullname == module_to_inspect:
+            # I believe this actually gets intercepted elsewhere, but I'm
+            # not 100% sure
             logger.warning(
                 'Direct import detected of a module currently under '
-                + 'inspection (%s). This is either a circular import, or an '
-                + 'error. Downstream code may break. Returning a stub.',
+                + 'inspection (%s). This is usually either a circular import '
+                + 'or an error. Downstream code may break.',
                 fullname)
-            stub_strategy = _StubStrategy.STUB
-        elif (
-            fullname in self.nostub_firstparty_modules
-            or base_package in self.nostub_packages
-        ):
-            logger.debug('Returning TRACK stub strategy for %s', fullname)
-            stub_strategy = _StubStrategy.TRACK
-        else:
+            # Note that truthiness is okay because we already returned a None
+            # spec for anything that is a None stub strategy.
+            if self.stubs_config.use_stub_strategy(fullname):
+                stub_strategy = _StubStrategy.STUB
+            else:
+                stub_strategy = _StubStrategy.TRACK
+        # Note that truthiness is okay because we already returned a None
+        # spec for anything that is a None stub strategy.
+        elif self.stubs_config.use_stub_strategy(fullname):
             logger.debug('Returning STUB stub strategy for %s', fullname)
             stub_strategy = _StubStrategy.STUB
+        else:
+            logger.debug('Returning TRACK stub strategy for %s', fullname)
+            stub_strategy = _StubStrategy.TRACK
 
         raw_module = self.module_stash_nostub_raw[fullname]
         spec = ModuleSpec(
@@ -1053,10 +1044,17 @@ def _stubbed_getattr(
         logger.debug('Returning metaclass reftype for %s.', to_reference)
         return make_metaclass_crossreffed(module=module_name, name=name)
 
+    elif special_reftype is ReftypeMarker.DECORATOR:
+        logger.debug(
+            'Returning first-order decorator reftype for %s.', to_reference)
+        return make_decorator_crossreffed(module=module_name, name=name)
+
+    elif special_reftype is ReftypeMarker.DECORATOR_SECOND_ORDER:
+        logger.debug(
+            'Returning second-order decorator reftype for %s.', to_reference)
+        return make_decorator_2o_crossreffed(module=module_name, name=name)
+
     else:
-        # This is just blocked on having a decorator flavor added to
-        # reftypes. Should be straightforward, but I want to limit the scope
-        # of the current code push to just a refactor.
         raise NotImplementedError(
             'Other special metaclass reftypes not yet supported.')
 
@@ -1128,5 +1126,89 @@ def _dataclass_decorator_wrapper(maybe_cls: type | None = None, **kwargs):
 def _patched_dataclass_getattr(name: str):
     if name == 'dataclass':
         return _dataclass_decorator_wrapper
+    elif name == 'fields':
+        return _patched_fields
     else:
         return getattr(dataclasses, name)
+
+
+def _patched_fields(*args, **kwargs):
+    """This is a workaround hack to just get dataclass fields working
+    temporarily.
+    """
+    return []
+
+
+@dataclass
+class StubsConfig:
+    enable_stubs: bool
+
+    # Note: if this is defined, it takes precedence over the others, which are
+    # therefore ignored
+    global_allowlist: frozenset[str] | None
+    # Note: full module name
+    firstparty_blocklist: frozenset[str]
+    # Note: root package, not individual modules
+    thirdparty_blocklist: frozenset[str]
+
+    @classmethod
+    def from_gather_kwargs(
+            cls,
+            enabled_stubs: bool | Collection[str],
+            nostub_firstparty_modules: Collection[str] | None,
+            nostub_packages: Collection[str] | None,
+            ) -> StubsConfig:
+        """Does some convenience stuff to construct a stubstate from
+        the kwargs used in gathering.
+        """
+        if nostub_firstparty_modules is None:
+            nostub_firstparty_modules = frozenset()
+        else:
+            nostub_firstparty_modules = frozenset(nostub_firstparty_modules)
+        if nostub_packages is None:
+            nostub_packages = frozenset()
+        else:
+            nostub_packages = frozenset(nostub_packages)
+        if enabled_stubs is True:
+            enable_stubs = True
+            global_allowlist = None
+        elif enabled_stubs is False:
+            enable_stubs = False
+            global_allowlist = None
+        else:
+            enable_stubs = True
+            global_allowlist = frozenset(enabled_stubs)
+
+        return cls(
+            enable_stubs=enable_stubs,
+            global_allowlist=global_allowlist,
+            firstparty_blocklist=nostub_firstparty_modules,
+            thirdparty_blocklist=nostub_packages)
+
+    def use_stub_strategy(self, module_fullname: str) -> bool | None:
+        """Returns True if the passed module fullname should be stubbed,
+        False if it should be tracked, and None if it should be
+        completely bypassed.
+        """
+        if not self.enable_stubs:
+            return False
+
+        if self.global_allowlist is None:
+            if module_fullname in self.firstparty_blocklist:
+                return False
+            package_name, _, _ = module_fullname.partition('.')
+
+            if (
+                # Note that package_name is correct here; stdlib doesn't add in
+                # every submodule.
+                package_name in sys.stdlib_module_names
+                or package_name in NOHOOK_PACKAGES
+            ):
+                return None
+            if package_name in self.thirdparty_blocklist:
+                return False
+
+            return True
+
+        else:
+            return module_fullname in self.global_allowlist

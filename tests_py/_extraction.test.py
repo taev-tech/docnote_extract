@@ -8,6 +8,7 @@ from docnote import ReftypeMarker
 
 from docnote_extract._extraction import _MODULE_TO_INSPECT
 from docnote_extract._extraction import GLOBAL_REFTYPE_MARKERS
+from docnote_extract._extraction import StubsConfig
 from docnote_extract._extraction import _DelegatedLoaderState
 from docnote_extract._extraction import _ExtractionFinderLoader
 from docnote_extract._extraction import _ExtractionLoaderState
@@ -55,7 +56,11 @@ class TestExtractionFinderLoader:
 
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         floader._stash_firstparty_or_nostub_raw()
         assert 'this' not in floader.module_stash_nostub_raw
         assert 'pytest' in floader.module_stash_nostub_raw
@@ -75,7 +80,11 @@ class TestExtractionFinderLoader:
 
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),
             module_stash_nostub_raw={
                 'pytest': pytest,
                 'docnote_extract_testpkg': docnote_extract_testpkg,
@@ -102,13 +111,25 @@ class TestExtractionFinderLoader:
     def test_find_spec_skips_stdlib(self):
         """find_spec() must return None for modules in the stdlib.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         assert floader.find_spec('antigravity', None, None) is None
 
     def test_find_spec_skips_nohook(self):
         """find_spec() must return None for modules in the nohook set.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         assert floader.find_spec('docnote', None, None) is None
 
     @set_phase(_ExtractionPhase.EXPLORATION)
@@ -118,7 +139,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         assert floader.find_spec('pytest', None, None) is None
 
     @set_phase(_ExtractionPhase.EXPLORATION)
@@ -128,7 +153,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         assert floader.find_spec('docnote_extract_testpkg', None, None) is None
 
     @set_inspection('')
@@ -139,7 +168,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),
             module_stash_nostub_raw={
                 'pytest': pytest,
                 'docnote_extract_testpkg': docnote_extract_testpkg})
@@ -157,7 +190,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),
             module_stash_nostub_raw={
                 'pytest': pytest,
                 'docnote_extract_testpkg': docnote_extract_testpkg})
@@ -177,7 +214,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),
             module_stash_nostub_raw={
                 'pytest': pytest,
                 'docnote_extract_testpkg': docnote_extract_testpkg})
@@ -197,7 +238,13 @@ class TestExtractionFinderLoader:
         """find_spec() must return a ModuleSpec with a set
         loader_state=_ExtractionLoaderState for a stubbable module.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         spec = floader.find_spec('docnote_extract_testpkg', None, None)
         assert spec is not None
         assert isinstance(spec.loader_state, _ExtractionLoaderState)
@@ -210,7 +257,13 @@ class TestExtractionFinderLoader:
         This test deliberately does as little as possible; we'll save
         the heavier lifting for an integration test.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         assert not _check_for_hook()
         floader.install()
         try:

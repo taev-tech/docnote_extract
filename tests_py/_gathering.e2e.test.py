@@ -36,7 +36,7 @@ def finnr_docs() -> Docnotes[SummaryMetadata]:
     we only need to gather it once. Hence, we have a module-scoped
     fixture that returns the gathered ``Docnotes``.
     """
-    return gather(['finnr'])
+    return gather(['finnr'], enabled_stubs=True)
 
 
 @pytest.fixture(scope='module')
@@ -47,11 +47,14 @@ def templatey_docs() -> Docnotes[SummaryMetadata]:
     """
     return gather(
         ['templatey'],
+        nostub_firstparty_modules={
+            'templatey.templates',
+            'templatey._bootstrapping'},
         special_reftype_markers={
             Crossref(
                 module_name='dcei',
                 toplevel_name='ext_dataclass'):
-            ReftypeMarker.DECORATOR})
+            ReftypeMarker.DECORATOR_SECOND_ORDER,})
 
 
 class TestGatheringE2EFinnr:

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from docnote import ReftypeMarker
 
+from docnote_extract._extraction import StubsConfig
 from docnote_extract._extraction import _ExtractionFinderLoader
 from docnote_extract._extraction import _ExtractionPhase
 from docnote_extract._extraction import _wrapped_tracking_getattr
@@ -38,7 +39,12 @@ class TestExtractionFinderLoader:
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
             module_stash_nostub_raw={
-                'docnote_extract_testpkg': docnote_extract_testpkg})
+                'docnote_extract_testpkg': docnote_extract_testpkg},
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset()))
         assert 'docnote_extract_testpkg' not in sys.modules
 
         floader.install()
@@ -62,12 +68,20 @@ class TestExtractionFinderLoader:
         returned.
         """
         # Empty here just because we want to test stuff against testpkg
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset()))
 
         floader.install()
         try:
             floader._stash_prehook_modules()
             try:
+                # NOTE: NOT THE TESTPKG! We're making sure that other things
+                # get stubbed out.
                 testpkg = importlib.import_module('docnote_extract_testutils')
                 assert 'docnote_extract_testutils' in sys.modules
                 assert is_crossreffed(testpkg)
@@ -95,7 +109,11 @@ class TestExtractionFinderLoader:
 
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),
             module_stash_nostub_raw={
                 'docnote_extract_testpkg': docnote_extract_testpkg,
                 'docnote_extract_testpkg._hand_rolled':
@@ -137,7 +155,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),
             special_reftype_markers={
                 Crossref(
                     module_name='docnote_extract_testutils.for_handrolled',
@@ -166,7 +188,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -188,7 +214,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -210,7 +240,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -231,10 +265,13 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
-            # CRITICAL: this is what makes this test unique!
-            nostub_firstparty_modules=frozenset({
-                'docnote_extract_testpkg._hand_rolled'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                # CRITICAL: this is what makes this test unique!
+                firstparty_blocklist=frozenset({
+                    'docnote_extract_testpkg._hand_rolled'}),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         with patch(
             'docnote_extract._extraction._wrapped_tracking_getattr',
@@ -298,7 +335,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -321,7 +362,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -343,7 +388,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -363,7 +412,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
