@@ -4,15 +4,14 @@ import importlib
 import sys
 from dataclasses import is_dataclass
 from importlib.machinery import ModuleSpec
-from unittest.mock import patch
+from typing import cast
 
 from docnote import ReftypeMarker
 
 from docnote_extract._extraction import StubsConfig
+from docnote_extract._extraction import TrackingImportSource
 from docnote_extract._extraction import _ExtractionFinderLoader
 from docnote_extract._extraction import _ExtractionPhase
-from docnote_extract._extraction import _wrapped_tracking_getattr
-from docnote_extract._extraction import is_wrapped_tracking_module
 from docnote_extract.crossrefs import Crossref
 from docnote_extract.crossrefs import has_crossreffed_base
 from docnote_extract.crossrefs import has_crossreffed_metaclass
@@ -226,15 +225,15 @@ class TestExtractionFinderLoader:
                     'docnote_extract_testpkg._hand_rolled'}),
                 thirdparty_blocklist=frozenset({'pytest'})),)
 
-        with patch(
-            'docnote_extract._extraction._wrapped_tracking_getattr',
-            autospec=True,
-            wraps=_wrapped_tracking_getattr
-        ) as tracking_getattr_watcher:
-            retval = floader.discover_and_extract()
-
+        retval = floader.discover_and_extract()
         to_inspect = retval[
             'docnote_extract_testpkg._hand_rolled.imports_from_parent']
+
+        registry = to_inspect.__docnote_extract_metadata__.tracking_registry
+        assert id(to_inspect.RENAMED_SENTINEL) in registry
+        assert registry[id(to_inspect.RENAMED_SENTINEL)] == (
+            'docnote_extract_testpkg._hand_rolled',
+            'SOME_SENTINEL')
 
         # Okay, so... I'd like to just check that call_count == 2. Except
         # it isn't, and it never will be (unless the implementation of
@@ -250,24 +249,20 @@ class TestExtractionFinderLoader:
         # stack dumps, so... well anyways. Machete mode debugging and all that.
         # Instead, for robustness, we'll just make sure that we had tracking
         # lookups against the correct attributes.
-        attr_targets = {
-            call_arg.args[0]
-            for call_arg in tracking_getattr_watcher.call_args_list}
-        module_targets = {
-            call_arg.kwargs['module_name']
-            for call_arg in tracking_getattr_watcher.call_args_list}
+        targets = set(registry.values())
+        assert len(targets) == 2
+        target1, target2 = targets
+        assert target1 is not None and target2 is not None
+        targets = cast(TrackingImportSource, targets)
+        module_targets = {target[0] for target in targets}
+        attr_targets = {target[1] for target in targets}
+
         assert attr_targets == {'SOME_CONSTANT', 'SOME_SENTINEL'}
         assert module_targets == {'docnote_extract_testpkg._hand_rolled'}
 
         assert not is_crossreffed(to_inspect)
         assert not is_crossreffed(to_inspect.SOME_CONSTANT)
         assert not is_crossreffed(to_inspect.RENAMED_SENTINEL)
-
-        registry = to_inspect._docnote_extract_import_tracking_registry
-        assert id(to_inspect.RENAMED_SENTINEL) in registry
-        assert registry[id(to_inspect.RENAMED_SENTINEL)] == (
-            'docnote_extract_testpkg._hand_rolled',
-            'SOME_SENTINEL')
 
     @mocked_extraction_discovery([
             'docnote_extract_testpkg',

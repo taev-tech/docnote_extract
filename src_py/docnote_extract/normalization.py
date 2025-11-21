@@ -238,7 +238,8 @@ def normalize_module_dict(
         canonical_module, canonical_name = _get_or_infer_canonical_origin(
             name,
             obj,
-            tracking_registry=module._docnote_extract_import_tracking_registry,
+            tracking_registry=
+                module.__docnote_extract_metadata__.tracking_registry,
             containing_module=module.__name__,
             containing_dunder_all=dunder_all,
             containing_annotation_names=set(from_annotations))

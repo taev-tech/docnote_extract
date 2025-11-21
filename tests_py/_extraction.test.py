@@ -9,6 +9,8 @@ from docnote import ReftypeMarker
 
 from docnote_extract._extraction import _MODULE_TO_INSPECT
 from docnote_extract._extraction import GLOBAL_REFTYPE_MARKERS
+from docnote_extract._extraction import ExtractionMetadata
+from docnote_extract._extraction import ModulePostExtraction
 from docnote_extract._extraction import StubsConfig
 from docnote_extract._extraction import _DelegatedLoaderState
 from docnote_extract._extraction import _ExtractionFinderLoader
@@ -89,9 +91,20 @@ class TestExtractionFinderLoader:
                     'docnote_extract_testpkg': docnote_extract_testpkg,
                     'docnote_extract_testpkg._hand_rolled': raw_module})
 
+            mocked_module = ModulePostExtraction(
+                'docnote_extract_testpkg._hand_rolled')
+            mocked_module.__dict__.update(raw_module.__dict__)
+            mocked_module.__docnote_extract_metadata__ = ExtractionMetadata(
+                tracking_registry={},
+                sourcecode='')
+
+            def fake_import_module(name: str):
+                sys.modules[name] = mocked_module
+                return mocked_module
+
             with patch(
                 'docnote_extract._extraction.import_module',
-                wraps=importlib.import_module,
+                wraps=fake_import_module,
                 autospec=True,
             ) as import_module_mock:
                 result = floader.extract_firstparty(

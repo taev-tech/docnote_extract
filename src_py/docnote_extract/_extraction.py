@@ -19,6 +19,7 @@ from importlib import import_module
 from importlib import reload as reload_module
 from importlib.abc import Loader
 from importlib.machinery import ModuleSpec
+from importlib.util import module_from_spec
 from types import ModuleType
 from typing import Annotated
 from typing import Any
@@ -38,7 +39,8 @@ from docnote_extract.discovery import discover_all_modules
 from docnote_extract.discovery import find_special_reftypes
 from docnote_extract.summaries import Singleton
 
-type TrackingRegistry = dict[int, tuple[str, str] | None]
+type TrackingImportSource = tuple[str, str]
+type TrackingRegistry = dict[int, TrackingImportSource | None]
 UNPURGEABLE_MODULES: Annotated[
         set[str],
         Note('''As noted in the stdlib documentation for the ``sys`` module,
@@ -70,6 +72,16 @@ _CLONABLE_IMPORT_ATTRS = {
     '__package__',
     '__path__',
     '__file__',
+}
+# These are critical to avoid infinite recursion
+_UNTRACKED_IMPORT_ATTRS = {
+    *_CLONABLE_IMPORT_ATTRS,
+    '__spec__',
+    '__name__',
+    '__dict__',
+    '__loader__',
+    '__class__',
+    '__getattr__',
 }
 
 logger = logging.getLogger(__name__)
@@ -134,6 +146,7 @@ class _ExtractionFinderLoader(Loader):
         try:
             logger.info('Stashing prehook modules and installing import hook.')
             self._stash_prehook_modules()
+            self._shim_dataclasses()
             self.known_clean_modules.update(sys.modules)
             self.install()
 
@@ -228,11 +241,15 @@ class _ExtractionFinderLoader(Loader):
                     extracted_module = cast(
                         ModulePostExtraction,
                         import_module(module_name))
+                    metadata = extracted_module.__docnote_extract_metadata__
+                    self._recover_typecheck_blocks_via_second_inspectee_reexec(
+                        module_name,
+                        metadata.sourcecode,
+                        extracted_module.__dict__)
+
                 finally:
                     self.inspected_modules.add(module_name)
 
-            extracted_module._docnote_extract_import_tracking_registry = (
-                import_tracking_registry)
             return extracted_module
         finally:
             _MODULE_TO_INSPECT.reset(inspect_ctx_token)
@@ -286,75 +303,18 @@ class _ExtractionFinderLoader(Loader):
     def _reexec_tracking_wrapper(
             self,
             module_name: str,
-            spec: ModuleSpec,
             module_source: str,
-            raw_module: ModuleType,
             dest_module: ModuleType
-            ) -> ModuleType:
-        """First-party tracking modules need to be re-executed for
-        every module inspection, because (by definition) the stub state
-        of at least one module (the inspectee) will have changed, and we
-        need to maintain consistent state across all modules.
+            ) -> None:
+        """See the docstring for ``_FirstpartyTrackingModule`` if you
+        need to make sense of this.
 
-        However, this is non-trivial for two reasons:
-        1.. we need to undo the ``typing.TYPE_CHECKING`` override done
-            as part of inspection, lest we encounter circular imports
-        2.. some packages, including extremely popular stdlib libraries
-            ^^like **dataclasses**^^, do super funky shenanigans with
-            importing, and (when these dependencies are exercised at
-            import time, as they are with decorators like
-            ``@dataclass``) this can break execution.
-
-        The general strategy for the second point is:
-        ++  create a snapshot of the prepared namespace for the tracking
-            (not the delegated!) module before re-exec'ing its source
-            code
-        ++  re-exec the source code into the prepared namespace for the
-            tracking (not the delegated!) module
-        ++  copy everything added by exec into the tracking module, into
-            the delegated module
-        ++  ``clear()`` the tracking module's ``__dict__``, and then
-            restore it from the earlier snapshot
-
-        > Re: dataclasses
-            This is a very specific edge case, but it's important to
-            understand:
-            ++  ``from __future__ import annotations`` converts all
-                annotations into strings
-            ++  dataclasses needs to look for some module-level magic
-                values as type hints, notably ``KW_ONLY``
-            ++  instead of calling the other typing-specific facilities
-                for resolving stringified type hints, dataclasses has
-                its own implementation. This manually checks for the
-                module in ``sys.modules``, and then looks directly at
-                that module's ``__dict__``. If at any time it fails a
-                lookup, it short-circuits, assuming that the stringified
-                value is irrelevant to tthe dataclass transform
-            ++  note that this bypasses the module ``__getattr__`` hook!
-
-            Therefore, for dataclasses to work, **during tracking module
-            re-exec**, the following must be true:
-            ++  there must be a module in ``sys.modules`` for the module
-                fullname we want to track
-            ++  the real imported objects have to exist in that module's
-                namespace during ``exec`` time
-            ++  those objects must be the same (literally the same, ie
-                same ``id`` and ``(x is y) is True``) as the ones
-                returned during the actual tracking imports at
-                inspection time
-            ++  the tracking module ``__dict__`` must be **missing** a
-                name in order for the ``__getattr__`` hook to have an
-                effect
+        The most important thing to keep in mind for this particular
+        method is that we need to undo the ``typing.TYPE_CHECKING``
+        override done as part of inspection, lest we encounter circular
+        imports.
         """
         logger.info('Re-exec-ing module for tracking: %s', module_name)
-
-        # Note: yes, we do indeed want to create a new module
-        # object here! Remember, this is for the **delegated**
-        # module (ie, the module we do lookups against), and not
-        # the raw module.
-        delegated_module = _clone_import_attrs(raw_module, spec)
-        # Save this for later
-        prepped_dict = {**dest_module.__dict__}
 
         # We need to first undo any changes we might have made to
         # the type checking flag as part of re-execing the current
@@ -372,16 +332,27 @@ class _ExtractionFinderLoader(Loader):
         finally:
             typing.TYPE_CHECKING = existing_typecheck_flag
 
-        for key, value in dest_module.__dict__.items():
-            if key not in delegated_module.__dict__:
-                delegated_module.__dict__[key] = value
-
-        dest_module.__dict__.clear()
-        dest_module.__dict__.update(prepped_dict)
-
-        return delegated_module
-
     def _reexec_inspectee_module(
+            self,
+            module_name: str,
+            module_source: str,
+            dest_namespace: dict[str, Any]):
+        """For now, this just wraps the re-exec around some logging.
+        However, after the import is done (but before extraction
+        completes for the module), this gets followed up by
+        ``_recover_typecheck_blocks_via_second_inspectee_reexec``.
+        """
+        logger.info('Re-exec-ing module for inspection: %s', module_name)
+        # Now we can re-exec with the normal TYPE_CHECKING flag.
+        try:
+            exec(module_source, dest_namespace)  # noqa: S102
+        except Exception:
+            # The traceback we get for this is miserable, so double-log so that
+            # we get more info (at least the damn module name, seriously)
+            logger.exception('Failed to re-exec %s', module_name)
+            raise
+
+    def _recover_typecheck_blocks_via_second_inspectee_reexec(
             self,
             module_name: str,
             module_source: str,
@@ -392,33 +363,28 @@ class _ExtractionFinderLoader(Loader):
         available for analysis after extraction. We also need to avoid
         having non-identical (as in, same ``id()``) objects between any
         quasi-circular deps hidden behind those blocks, so we can't
-        simply call exec twice and overwrite the values there.
+        simply call exec twice and overwrite the values there. AND we
+        can't do this as part of the normal import path, because the
+        import system is "smart" enough to detect that circular imports
+        are trying to import from a partially-initialized module, and
+        fail.
 
         Instead, our strategy is:
-        1.. exec the module normally, with typing.TYPE_CHECKING set to
-            false. This will also carry through to any downstream
-            imports.
-        2.. re-exec the module into a separate, temporary dict, setting
+        1.. exec the module normally within ``_reexec_inspectee_module``
+            (ie, with typing.TYPE_CHECKING set to false). This will also
+            carry through to any downstream imports.
+        2.. then, within the parent ``extract_firstparty`` that called
+            the ``import_module`` that resulted in the initial reexec
+            call, but **after** that has finished, call this method.
+        3.. re-exec the module into a separate, temporary dict, setting
             typing.TYPE_CHECKING to true. **This needs to then be
             overridden in any downstream imports.**
-        3.. add any missing values discovered in the second execution
+        4.. add any missing values discovered in the second execution
             back to the destination namespace
         """
         logger.info(
-            'Re-EXECing module for inspection: %s (normal namespace)',
-            module_name)
-        # Now we can re-exec with the normal TYPE_CHECKING flag.
-        try:
-            exec(module_source, dest_namespace)  # noqa: S102
-        except Exception:
-            # The traceback we get for this is miserable, so double-log so that
-            # we get more info (at least the damn module name, seriously)
-            logger.exception('Failed to re-exec %s', module_name)
-            raise
-
-        logger.info(
-            'Re-EXECing module for inspection: %s (expanded namespace)',
-            module_name)
+            'Recovering imports hidden behind ``if typing.TYPE_CHECKING``: '
+            + 'blocks via inspectee re-exec: %s', module_name)
         # Copy over the entire existing namespace from the module, including
         # anything that was already defined there. This ensures that it is
         # fully populated with the real objects defined there before we expand
@@ -426,6 +392,7 @@ class _ExtractionFinderLoader(Loader):
         # execute the body of the module, but we simply won't copy those keys
         # back to the dest_namespace!
         expanded_namespace = {**dest_namespace}
+        self._make_fake_typeshed()
         typing.TYPE_CHECKING = True
         try:
             exec(module_source, expanded_namespace)  # noqa: S102
@@ -476,24 +443,43 @@ class _ExtractionFinderLoader(Loader):
         module_names.difference_update(UNPURGEABLE_MODULES)
         return module_names
 
+    def _make_fake_typeshed(self):
+        """Occasionally, libraries may import from ``_typeshed``. This
+        causes issues (obviously) if it isn't available at runtime, but
+        it's not really a package that can be installed. Therefore, we
+        **always** create a stub for it.
+        """
+        spec = ModuleSpec(name='_typeshed', loader=None)
+        module = module_from_spec(spec)
+        module.__getattr__ = partial(
+            _stubbed_getattr,
+            module_name='_typeshed',
+            special_reftype_markers=self.special_reftype_markers)
+        sys.modules['_typeshed'] = module
+
+    def _shim_dataclasses(self):
+        """Dataclasses generates its own docstring for classes that
+        simply repeats the signature. This can needlessly break the
+        docstring parsing, since it will conflict with any configured
+        markup language (via the docnote config). Therefore, we add a
+        light shim on dataclasses that restores the original defined
+        docstring on the class, even if there was none, after doing the
+        transform.
+        """
+        logger.debug('Shimming dataclasses in sys.modules')
+        self.module_stash_prehook['dataclasses'] = dataclasses
+        patched_dataclasses = _clone_import_attrs(
+            src_module=dataclasses,
+            spec=dataclasses.__spec__)
+        patched_dataclasses.__getattr__ = _patched_dataclass_getattr
+        sys.modules['dataclasses'] = patched_dataclasses
+
     def _stash_prehook_modules(self):
         """This checks all of sys.modules, stashing and removing
         anything that isn't stdlib or a thirdparty bypass package.
         """
         prehook_module_names = sorted(sys.modules)
         for prehook_module_name in prehook_module_names:
-            package_name, _, _ = prehook_module_name.partition('.')
-
-            if package_name == 'dataclasses':
-                logger.debug('Shimming dataclasses in sys.modules')
-                self.module_stash_prehook['dataclasses'] = dataclasses
-                patched_dataclasses = _clone_import_attrs(
-                    src_module=dataclasses,
-                    spec=dataclasses.__spec__)
-                patched_dataclasses.__getattr__ = _patched_dataclass_getattr
-                sys.modules['dataclasses'] = patched_dataclasses
-                continue
-
             stub_strategy = self.stubs_config.use_stub_strategy(
                 prehook_module_name)
 
@@ -682,6 +668,36 @@ class _ExtractionFinderLoader(Loader):
         mechanics to create the module object for us, and then populate
         it during ``exec_module``.
         """
+        loader_state = spec.loader_state
+        if not isinstance(loader_state, _ExtractionLoaderState):
+            logger.warning(
+                'Missing loader state for %s. This is almost certainly a bug, '
+                + 'and may cause stuff to break.', spec.name)
+            return None
+
+        if (
+            loader_state.stub_strategy is _StubStrategy.TRACK
+            and loader_state.is_firstparty
+        ):
+            if not isinstance(loader_state, _DelegatedLoaderState):
+                # Theoretically impossible. Indicates a bug.
+                # Note that, since we're just (eventually) going to exec()
+                # the module source into the module's __dict__, we can "safely"
+                # return a normal module object (or at least, "safely" as in
+                # "non-catastrophic failure")
+                logger.warning(
+                    'Likely bug: delegated/nostub ``_StubStrategy`` without '
+                    + '``_DelegatedLoaderState``! Tracking and/or inspection '
+                    + 'will break for %s.', loader_state.fullname)
+                return None
+
+            module = _FirstpartyTrackingModule(spec.name)
+            _clone_import_attrs(
+                loader_state.delegated_module,
+                spec,
+                dest_module=module)
+            return module
+
         return None
 
     def exec_module(self, module: ModuleType):
@@ -755,11 +771,9 @@ class _ExtractionFinderLoader(Loader):
                 # might be downstream imports of those modules.
                 if loader_state.is_firstparty:
                     module_source = inspect.getsource(real_module)
-                    delegated_module = self._reexec_tracking_wrapper(
+                    self._reexec_tracking_wrapper(
                         module_name,
-                        spec,
                         module_source,
-                        real_module,
                         module)
 
                 # Thirdparty tracking can just reuse the real module directly
@@ -768,19 +782,24 @@ class _ExtractionFinderLoader(Loader):
                 else:
                     delegated_module = real_module
 
-                module.__getattr__ = partial(
-                    _wrapped_tracking_getattr,
-                    module_name=module.__name__,
-                    src_module=delegated_module)
-                module._docnote_extract_src_module = delegated_module
+                    module.__getattr__ = partial(
+                        _wrapped_tracking_getattr,
+                        module_name=module.__name__,
+                        src_module=delegated_module)
+                    module._docnote_extract_src_module = delegated_module
 
             # See note in extract_firstparty for the reasoning here.
             elif loader_state.stub_strategy is _StubStrategy.INSPECT:
+                module = cast(ModulePostExtraction, module)
                 module_source = inspect.getsource(real_module)
                 self._reexec_inspectee_module(
                     module_name,
                     module_source,
                     module.__dict__)
+                registry = _ACTIVE_TRACKING_REGISTRY.get(None)
+                module.__docnote_extract_metadata__ = ExtractionMetadata(
+                        tracking_registry=registry or {},
+                        sourcecode=module_source)
 
             else:
                 logger.error(
@@ -952,6 +971,8 @@ def _wrapped_tracking_getattr(
     from.
     """
     # These are always correct, so never delegate them.
+    # (keep in mind that __getattr__ only gets called if these were missing in
+    # the __dict__!)
     if name in _CLONABLE_IMPORT_ATTRS:
         raise AttributeError(name)
 
@@ -1036,12 +1057,137 @@ def _stubbed_getattr(
             'Other special metaclass reftypes not yet supported.')
 
 
+class _FirstpartyTrackingModule(ModuleType):
+    """First-party tracking modules need to be re-executed for
+    every module inspection, because (by definition) the stub state
+    of at least one module (the inspectee) will have changed, and we
+    need to maintain consistent state across all modules.
+
+    However, this is non-trivial for two reasons:
+    1.. some packages, including extremely popular stdlib libraries
+        ^^like **dataclasses**^^, do super funky shenanigans with
+        importing, and (when these dependencies are exercised at
+        import time, as they are with decorators like
+        ``@dataclass``) this can break execution.
+    2.. all of the actual members of a module retain direct
+        references to the module's ``__dict__`` in the form of their
+        globals; these are bound directly and bypass any
+        ``__getattr__`` hook.
+
+    Note that this situtation **does not exist for thirdparty
+    tracking modules**, because these need not be re-executed. These
+    can be served very simply by a ``__getattr__`` hook that
+    delegates the lookup to the original module object.
+
+    What doesn't solve #1 above is:
+    ++  create a snapshot of the prepared namespace for the tracking
+        (not the delegated!) module before re-exec'ing its source
+        code
+    ++  re-exec the source code into the prepared namespace for the
+        tracking (not the delegated!) module
+    ++  copy everything added by exec into the tracking module, into
+        the delegated module
+    ++  ``clear()`` the tracking module's ``__dict__``, and then
+        restore it from the earlier snapshot
+    This breaks because of #2 above; all of the members of the
+    tracked module reference the ``__dict__`` of the tracking
+    wrapper directly, meaning anything that gets executed at import
+    time (for example, decorators) which also reference anything
+    else in the module will fail, raising ``NameError`` because it
+    fails to find the name within the module's ``__dict__`` (since
+    we would have just cleared it).
+
+    Instead, we use this ``ModuleType`` subclass to perform the
+    tracking within the module's ``__getattribute__``, thereby
+    preserving direct access to the module's ``__dict__`` while
+    still intercepting attribute access for tracking purposes
+    whenever other parts of the code import from the module.
+
+    > Re: dataclasses
+        This is a very specific edge case, but it's important to
+        understand:
+        ++  ``from __future__ import annotations`` converts all
+            annotations into strings
+        ++  dataclasses needs to look for some module-level magic
+            values as type hints, notably ``KW_ONLY``
+        ++  instead of calling the other typing-specific facilities
+            for resolving stringified type hints, dataclasses has
+            its own implementation. This manually checks for the
+            module in ``sys.modules``, and then looks directly at
+            that module's ``__dict__``. If at any time it fails a
+            lookup, it short-circuits, assuming that the stringified
+            value is irrelevant to tthe dataclass transform
+        ++  note that this bypasses the module ``__getattr__`` hook!
+
+        Therefore, for dataclasses to work, **during tracking module
+        re-exec**, the following must be true:
+        ++  there must be a module in ``sys.modules`` for the module
+            fullname we want to track
+        ++  the real imported objects have to exist in that module's
+            namespace during ``exec`` time
+        ++  those objects must be the same (literally the same, ie
+            same ``id`` and ``(x is y) is True``) as the ones
+            returned during the actual tracking imports at
+            inspection time
+        ++  the tracking module ``__dict__`` must be **missing** a
+            name in order for the ``__getattr__`` hook to have an
+            effect
+    """
+
+    def __getattribute__(self, name: str) -> Any:
+        # These need to immediately return, because, well, otherwise it'd be
+        # infinite recursion! That they bypass the debug log is ... I mean tbh
+        # it's probably also beneficial, otherwise we'd get a bunch of noise
+        # from it.
+        if name in _UNTRACKED_IMPORT_ATTRS:
+            return super().__getattribute__(name)
+
+        module_name = self.__name__
+        logger.debug(
+            'Detected attribute access at firstparty tracking module %s:%s',
+            module_name, name)
+        registry = _ACTIVE_TRACKING_REGISTRY.get(None)
+        src_object = super().__getattribute__(name)
+        obj_id = id(src_object)
+        tracked_src = (module_name, name)
+
+        if registry is None:
+            logger.debug('No tracking active for %s:%s', module_name, name)
+        else:
+            logger.debug('Tracking import for %s:%s', module_name, name)
+            # We use None to indicate that there's a conflict within the
+            # retrieval imports we've encountered, so we can't use it as a
+            # stand-in for missing stuff.
+            existing_record = registry.get(obj_id, Singleton.MISSING)
+            if existing_record is Singleton.MISSING:
+                registry[obj_id] = tracked_src
+
+            # Note: we only need to overwrite if it isn't already none;
+            # otherwise we can just skip it. None is a sink state, a black
+            # hole.
+            elif (
+                existing_record is not None
+                and existing_record is not tracked_src
+                and existing_record != tracked_src
+            ):
+                registry[obj_id] = None
+
+        return src_object
+
+
 def is_wrapped_tracking_module(
         module: ModuleType
         ) -> TypeGuard[WrappedTrackingModule]:
     return (
         isinstance(module, ModuleType)
-        and hasattr(module, '_docnote_extract_src_module'))
+        and hasattr(module, '_docnote_extract_src_module')
+    ) or isinstance(module, _FirstpartyTrackingModule)
+
+
+@dataclass
+class ExtractionMetadata:
+    tracking_registry: TrackingRegistry
+    sourcecode: str
 
 
 class _WrappedTrackingModuleBase(Protocol):
@@ -1060,7 +1206,7 @@ class WrappedTrackingModule(ModuleType, _WrappedTrackingModuleBase):
 
 
 class _ModulePostExtractionBase(Protocol):
-    _docnote_extract_import_tracking_registry: TrackingRegistry
+    __docnote_extract_metadata__: ExtractionMetadata
 
 
 class ModulePostExtraction(ModuleType, _ModulePostExtractionBase):
@@ -1071,7 +1217,7 @@ class ModulePostExtraction(ModuleType, _ModulePostExtractionBase):
     """
     # Including this to silence type errors when we create these manually for
     # testing purposes
-    _docnote_extract_import_tracking_registry: TrackingRegistry
+    __docnote_extract_metadata__: ExtractionMetadata
 
 
 def is_module_post_extraction(
@@ -1079,7 +1225,7 @@ def is_module_post_extraction(
         ) -> TypeGuard[ModulePostExtraction]:
     return (
         isinstance(module, ModuleType)
-        and hasattr(module, '_docnote_extract_import_tracking_registry'))
+        and hasattr(module, '__docnote_extract_metadata__'))
 
 
 @wraps(dataclass)
