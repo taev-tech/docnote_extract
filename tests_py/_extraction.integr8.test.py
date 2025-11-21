@@ -38,7 +38,7 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            module_stash_nostub_raw={
+            module_stash_raw={
                 'docnote_extract_testpkg': docnote_extract_testpkg},
             stubs_config=StubsConfig(
                 enable_stubs=True,
@@ -95,53 +95,6 @@ class TestExtractionFinderLoader:
         testpkg_reloaded = importlib.import_module('docnote_extract_testutils')
         assert testpkg_reloaded is not testpkg
         assert not is_crossreffed(testpkg_reloaded)
-
-    @set_phase(_ExtractionPhase.EXTRACTION)
-    @set_inspection('docnote_extract_testpkg._hand_rolled')
-    @purge_cached_testpkg_modules
-    def test_inspection_direct_import_stubbed(self, caplog):
-        """After installing the import hook and while inspecting a
-        module, attempting to import the module being inspected must
-        return a stubbed version of the module and issue a warning
-        that the behavior is unsupported.
-        """
-        assert 'pytest' in sys.modules
-
-        floader = _ExtractionFinderLoader(
-            frozenset({'docnote_extract_testpkg'}),
-            stubs_config=StubsConfig(
-                enable_stubs=True,
-                global_allowlist=None,
-                firstparty_blocklist=frozenset(),
-                thirdparty_blocklist=frozenset({'pytest'})),
-            module_stash_nostub_raw={
-                'docnote_extract_testpkg': docnote_extract_testpkg,
-                'docnote_extract_testpkg._hand_rolled':
-                    docnote_extract_testpkg._hand_rolled})
-
-        floader.install()
-        try:
-            floader._stash_prehook_modules()
-            try:
-                caplog.clear()
-                testpkg = importlib.import_module(
-                    'docnote_extract_testpkg._hand_rolled')
-
-                # This is a quick and dirty way of checking for the log message
-                captured_log_raw = ''.join(
-                    record.msg for record in caplog.records)
-                assert 'Direct import detected' in captured_log_raw
-                assert testpkg is not docnote_extract_testpkg._hand_rolled
-                assert 'docnote_extract_testpkg._hand_rolled' in sys.modules
-                assert is_crossreffed(testpkg)
-            finally:
-                floader._unstash_prehook_modules()
-        finally:
-            floader.uninstall()
-
-        assert 'docnote_extract_testpkg._hand_rolled' not in sys.modules
-        assert 'docnote_extract_testpkg' not in sys.modules
-        assert 'pytest' in sys.modules
 
     @mocked_extraction_discovery([
         'docnote_extract_testpkg',
@@ -306,11 +259,6 @@ class TestExtractionFinderLoader:
         assert attr_targets == {'SOME_CONSTANT', 'SOME_SENTINEL'}
         assert module_targets == {'docnote_extract_testpkg._hand_rolled'}
 
-        assert 'docnote_extract_testpkg._hand_rolled' \
-            in floader.module_stash_tracked
-        assert is_wrapped_tracking_module(
-            floader.module_stash_tracked[
-                'docnote_extract_testpkg._hand_rolled'])
         assert not is_crossreffed(to_inspect)
         assert not is_crossreffed(to_inspect.SOME_CONSTANT)
         assert not is_crossreffed(to_inspect.RENAMED_SENTINEL)
