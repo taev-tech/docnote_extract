@@ -449,10 +449,16 @@ def extend_typevars(
                 + 'crossref!', obj)
 
     else:
-        for typevar in raw_typevars:
-            typevars[typevar] = parent_crossref / SyntacticTraversal(
-                type_=SyntacticTraversalType.TYPEVAR,
-                key=typevar.__name__)
+        # We can, in some weird situations (ex within the stdlib... which we
+        # maybe should be filtering out at this point, but that's a question
+        # for another time) run into getset descriptors here, and potentially
+        # other objects, too,
+        # Or at the very least, this is true of ``typing.TypeAliasType``.
+        if isinstance(raw_typevars, tuple):
+            for typevar in raw_typevars:
+                typevars[typevar] = parent_crossref / SyntacticTraversal(
+                    type_=SyntacticTraversalType.TYPEVAR,
+                    key=typevar.__name__)
 
     return typevars
 
