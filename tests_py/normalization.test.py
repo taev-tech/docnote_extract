@@ -565,7 +565,6 @@ class TestTypeSpec:
                             key='T'),))})
 
         assert isinstance(result, TypeSpec)
-        print(result.normtype)
         assert result.normtype == NormalizedConcreteType(
             primary=Crossref(
                 module_name='foo',
@@ -591,7 +590,6 @@ class TestTypeSpec:
                             key='T'),))})
 
         assert isinstance(result, TypeSpec)
-        print(result.normtype)
         assert result.normtype == NormalizedConcreteType(
             primary=Crossref(
                 module_name='tests_py.normalization_test',

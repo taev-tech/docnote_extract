@@ -285,7 +285,6 @@ class TestSummarization:
         assert sugar_sig.retval.typespec is not None
         assert isinstance(
             sugar_sig.retval.typespec.normtype, NormalizedConcreteType)
-        print(sugar_sig.retval.typespec.normtype.primary)
         assert sugar_sig.retval.typespec.normtype.primary == Crossref(
             module_name='docnote_extract_testpkg._hand_rolled.has_typevars',
             toplevel_name='uses_sugared_typevar',
