@@ -283,7 +283,7 @@ def create_variable_summary(
             logger.warning(
                 'Type inference is not supported for crossreffed variables. '
                 + 'For a non-None typespec, you must explicitly declare the '
-                + 'type of %s', src_obj)
+                + 'type of %s (%s)', name_in_parent, src_obj)
             # I'm punting on this because it's a huge can of worms. For now,
             # we don't support type inference here; you really MUST declare
             # it as an explicit type
@@ -510,8 +510,19 @@ def create_class_summary(
     crossref = parent_crossref_namespace.get(name_in_parent)
     logger.debug(
         'Creating class summary for %s (%s)', name_in_parent, crossref)
-    annotations = get_type_hints(
-        src_obj, globalns=module_globals, include_extras=True)
+    # TODO: does this need to support localns with parent typevars? Or is that
+    # always, by definition, covered by the module globals?
+    try:
+        annotations = get_type_hints(
+            src_obj,
+            globalns=module_globals,
+            include_extras=True)
+    except Exception as exc:
+        logger.info(
+            'Failed to get type hints for %s for class analysis.',
+            src_obj, exc_info=exc)
+        annotations = {}
+
     # Note that, especially in classes, it's extremely common to have
     # annotations that don't appear in the dict (eg dataclass fields).
     # But we don't want to clobber defined values, so we first extract
@@ -795,15 +806,23 @@ def _make_signature(  # noqa: PLR0913, PLR0915
     TODO: this needs to add support for the object filters from the
     parent!
     """
+    # TODO: does this need to include anything else?
+    localns = {
+        typevar.__name__: crossref
+        for typevar, crossref in parent_typevars.items()}
     params: list[ParamSummary] = []
     try:
         annotations = get_type_hints(
-            src_obj, globalns=module_globals, include_extras=True)
-    except TypeError:
-        logger.debug(
+            src_obj,
+            globalns=module_globals,
+            localns=localns,
+            include_extras=True)
+    except Exception as exc:
+        logger.info(
             'Failed to get type hints for %s for signature analysis. This is '
             + 'usually because the object is a from a stdlib/builtin callable '
-            + 'or a C extension, but it might indicate a bug.', src_obj)
+            + 'or a C extension, but it might indicate a bug.',
+            src_obj, exc_info=exc)
         annotations = {}
 
     try:

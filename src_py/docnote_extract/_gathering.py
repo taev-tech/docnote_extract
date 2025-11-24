@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Annotated
 from typing import overload
@@ -9,6 +9,7 @@ from typing import overload
 from docnote import Note
 
 from docnote_extract._extraction import ReftypeMarker
+from docnote_extract._extraction import StubsConfig
 from docnote_extract._extraction import _ExtractionFinderLoader
 from docnote_extract._module_tree import ConfiguredModuleTreeNode
 from docnote_extract._module_tree import SummaryTreeNode
@@ -30,9 +31,32 @@ from docnote_extract.summaries import SummaryMetadataProtocol
 
 @overload
 def gather[T: SummaryMetadataProtocol](
-        firstparty_pkg_names: Iterable[str],
+        firstparty_pkg_names: Collection[str],
         *,
         summary_metadata_factory: SummaryMetadataFactoryProtocol[T],
+        enabled_stubs: Annotated[
+                bool | frozenset[str],
+                Note('''Enabling stubbing will cause objects imported from
+                    modules to be replaced by magicmock-like objects that can
+                    both improve the reliability of cross-module references
+                    and decrease required time for gathering, since the actual
+                    upstream module is never loaded. This can be particularly
+                    beneficial for heavyweight third-party libraries that take
+                    a long time to load.
+
+                    Set to True to enable globally (subject to the other
+                    nostub settings). Set to False to disable globally. Or
+                    pass an explicit allowlist of modules (exact modules, not
+                    packages) to stub.
+
+                    **Note that stubbing is highly experimental.** Seemingly
+                    innocuous things (like module-level constants that are
+                    instances of imported classes) can break extraction in
+                    unexpected ways, and there are a number of very rough
+                    edges (for example, incomplete specification of special
+                    reftype markers can cause infinite loops during
+                    extraction).''')
+            ] = False,
         special_reftype_markers: Annotated[
                 dict[Crossref, ReftypeMarker] | None,
                 Note('''If you use metaclasses or decorators from third-party
@@ -40,14 +64,14 @@ def gather[T: SummaryMetadataProtocol](
                     correctly interpreted by the import stubbing mechanism.''')
             ] = None,
         nostub_firstparty_modules: Annotated[
-                Iterable[str] | None,
+                Collection[str] | None,
                 Note('''Note that this applies to only an individual module,
                     not an entire package, and can only be used for firstparty
                     modules (ie, ``firstparty_pkg_names`` and their children).
                     ''')
             ] = None,
         nostub_packages: Annotated[
-                Iterable[str] | None,
+                Collection[str] | None,
                 Note('''Note that this applies to an entire package and not
                     just an individual module, but it can be used for
                     thirdparty dependencies.''')
@@ -63,9 +87,32 @@ def gather[T: SummaryMetadataProtocol](
         ) -> Docnotes[T]: ...
 @overload
 def gather(
-        firstparty_pkg_names: Iterable[str],
+        firstparty_pkg_names: Collection[str],
         *,
         summary_metadata_factory: None = None,
+        enabled_stubs: Annotated[
+                bool | frozenset[str],
+                Note('''Enabling stubbing will cause objects imported from
+                    modules to be replaced by magicmock-like objects that can
+                    both improve the reliability of cross-module references
+                    and decrease required time for gathering, since the actual
+                    upstream module is never loaded. This can be particularly
+                    beneficial for heavyweight third-party libraries that take
+                    a long time to load.
+
+                    Set to True to enable globally (subject to the other
+                    nostub settings). Set to False to disable globally. Or
+                    pass an explicit allowlist of modules (exact modules, not
+                    packages) to stub.
+
+                    **Note that stubbing is highly experimental.** Seemingly
+                    innocuous things (like module-level constants that are
+                    instances of imported classes) can break extraction in
+                    unexpected ways, and there are a number of very rough
+                    edges (for example, incomplete specification of special
+                    reftype markers can cause infinite loops during
+                    extraction).''')
+            ] = False,
         special_reftype_markers: Annotated[
                 dict[Crossref, ReftypeMarker] | None,
                 Note('''If you use metaclasses or decorators from third-party
@@ -73,14 +120,14 @@ def gather(
                     correctly interpreted by the import stubbing mechanism.''')
             ] = None,
         nostub_firstparty_modules: Annotated[
-                Iterable[str] | None,
+                Collection[str] | None,
                 Note('''Note that this applies to only an individual module,
                     not an entire package, and can only be used for firstparty
                     modules (ie, ``firstparty_pkg_names`` and their children).
                     ''')
             ] = None,
         nostub_packages: Annotated[
-                Iterable[str] | None,
+                Collection[str] | None,
                 Note('''Note that this applies to an entire package and not
                     just an individual module, but it can be used for
                     thirdparty dependencies.''')
@@ -95,10 +142,33 @@ def gather(
             ] = True
         ) -> Docnotes[SummaryMetadata]: ...
 def gather[T: SummaryMetadataProtocol](
-        firstparty_pkg_names: Iterable[str],
+        firstparty_pkg_names: Collection[str],
         *,
         summary_metadata_factory:
             SummaryMetadataFactoryProtocol[T] | None = None,
+        enabled_stubs: Annotated[
+                bool | Collection[str],
+                Note('''Enabling stubbing will cause objects imported from
+                    modules to be replaced by magicmock-like objects that can
+                    both improve the reliability of cross-module references
+                    and decrease required time for gathering, since the actual
+                    upstream module is never loaded. This can be particularly
+                    beneficial for heavyweight third-party libraries that take
+                    a long time to load.
+
+                    Set to True to enable globally (subject to the other
+                    nostub settings). Set to False to disable globally. Or
+                    pass an explicit allowlist of modules (exact modules, not
+                    packages) to stub.
+
+                    **Note that stubbing is highly experimental.** Seemingly
+                    innocuous things (like module-level constants that are
+                    instances of imported classes) can break extraction in
+                    unexpected ways, and there are a number of very rough
+                    edges (for example, incomplete specification of special
+                    reftype markers can cause infinite loops during
+                    extraction).''')
+            ] = False,
         special_reftype_markers: Annotated[
                 dict[Crossref, ReftypeMarker] | None,
                 Note('''If you use metaclasses or decorators from third-party
@@ -106,14 +176,14 @@ def gather[T: SummaryMetadataProtocol](
                     correctly interpreted by the import stubbing mechanism.''')
             ] = None,
         nostub_firstparty_modules: Annotated[
-                Iterable[str] | None,
+                Collection[str] | None,
                 Note('''Note that this applies to only an individual module,
                     not an entire package, and can only be used for firstparty
                     modules (ie, ``firstparty_pkg_names`` and their children).
                     ''')
             ] = None,
         nostub_packages: Annotated[
-                Iterable[str] | None,
+                Collection[str] | None,
                 Note('''Note that this applies to an entire package and not
                     just an individual module, but it can be used for
                     thirdparty dependencies.''')
@@ -173,11 +243,6 @@ def gather[T: SummaryMetadataProtocol](
     decorator-compatible stub).
     """
     floader_options = {}
-    if nostub_firstparty_modules is not None:
-        floader_options['nostub_firstparty_modules'] = frozenset(
-            nostub_firstparty_modules)
-    if nostub_packages is not None:
-        floader_options['nostub_packages'] = frozenset(nostub_packages)
     if special_reftype_markers is not None:
         floader_options['special_reftype_markers'] = special_reftype_markers
 
@@ -187,7 +252,13 @@ def gather[T: SummaryMetadataProtocol](
         factory_kwarg = {'summary_metadata_factory': summary_metadata_factory}
 
     firstpary_pkgs = frozenset(firstparty_pkg_names)
-    floader = _ExtractionFinderLoader(firstpary_pkgs, **floader_options)
+    floader = _ExtractionFinderLoader(
+        firstpary_pkgs,
+        stubs_config=StubsConfig.from_gather_kwargs(
+            enabled_stubs,
+            nostub_firstparty_modules,
+            nostub_packages),
+        **floader_options)
     extraction = floader.discover_and_extract()
     configured_trees = ConfiguredModuleTreeNode.from_extraction(extraction)
 

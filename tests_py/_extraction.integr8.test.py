@@ -4,14 +4,14 @@ import importlib
 import sys
 from dataclasses import is_dataclass
 from importlib.machinery import ModuleSpec
-from unittest.mock import patch
+from typing import cast
 
 from docnote import ReftypeMarker
 
+from docnote_extract._extraction import StubsConfig
+from docnote_extract._extraction import TrackingImportSource
 from docnote_extract._extraction import _ExtractionFinderLoader
 from docnote_extract._extraction import _ExtractionPhase
-from docnote_extract._extraction import _wrapped_tracking_getattr
-from docnote_extract._extraction import is_wrapped_tracking_module
 from docnote_extract.crossrefs import Crossref
 from docnote_extract.crossrefs import has_crossreffed_base
 from docnote_extract.crossrefs import has_crossreffed_metaclass
@@ -37,8 +37,13 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            module_stash_nostub_raw={
-                'docnote_extract_testpkg': docnote_extract_testpkg})
+            module_stash_raw={
+                'docnote_extract_testpkg': docnote_extract_testpkg},
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset()))
         assert 'docnote_extract_testpkg' not in sys.modules
 
         floader.install()
@@ -62,12 +67,20 @@ class TestExtractionFinderLoader:
         returned.
         """
         # Empty here just because we want to test stuff against testpkg
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset()))
 
         floader.install()
         try:
             floader._stash_prehook_modules()
             try:
+                # NOTE: NOT THE TESTPKG! We're making sure that other things
+                # get stubbed out.
                 testpkg = importlib.import_module('docnote_extract_testutils')
                 assert 'docnote_extract_testutils' in sys.modules
                 assert is_crossreffed(testpkg)
@@ -82,49 +95,6 @@ class TestExtractionFinderLoader:
         assert testpkg_reloaded is not testpkg
         assert not is_crossreffed(testpkg_reloaded)
 
-    @set_phase(_ExtractionPhase.EXTRACTION)
-    @set_inspection('docnote_extract_testpkg._hand_rolled')
-    @purge_cached_testpkg_modules
-    def test_inspection_direct_import_stubbed(self, caplog):
-        """After installing the import hook and while inspecting a
-        module, attempting to import the module being inspected must
-        return a stubbed version of the module and issue a warning
-        that the behavior is unsupported.
-        """
-        assert 'pytest' in sys.modules
-
-        floader = _ExtractionFinderLoader(
-            frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
-            module_stash_nostub_raw={
-                'docnote_extract_testpkg': docnote_extract_testpkg,
-                'docnote_extract_testpkg._hand_rolled':
-                    docnote_extract_testpkg._hand_rolled})
-
-        floader.install()
-        try:
-            floader._stash_prehook_modules()
-            try:
-                caplog.clear()
-                testpkg = importlib.import_module(
-                    'docnote_extract_testpkg._hand_rolled')
-
-                # This is a quick and dirty way of checking for the log message
-                captured_log_raw = ''.join(
-                    record.msg for record in caplog.records)
-                assert 'Direct import detected' in captured_log_raw
-                assert testpkg is not docnote_extract_testpkg._hand_rolled
-                assert 'docnote_extract_testpkg._hand_rolled' in sys.modules
-                assert is_crossreffed(testpkg)
-            finally:
-                floader._unstash_prehook_modules()
-        finally:
-            floader.uninstall()
-
-        assert 'docnote_extract_testpkg._hand_rolled' not in sys.modules
-        assert 'docnote_extract_testpkg' not in sys.modules
-        assert 'pytest' in sys.modules
-
     @mocked_extraction_discovery([
         'docnote_extract_testpkg',
         'docnote_extract_testpkg._hand_rolled',
@@ -137,7 +107,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),
             special_reftype_markers={
                 Crossref(
                     module_name='docnote_extract_testutils.for_handrolled',
@@ -166,7 +140,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -188,7 +166,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -210,7 +192,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -231,20 +217,23 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
-            # CRITICAL: this is what makes this test unique!
-            nostub_firstparty_modules=frozenset({
-                'docnote_extract_testpkg._hand_rolled'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                # CRITICAL: this is what makes this test unique!
+                firstparty_blocklist=frozenset({
+                    'docnote_extract_testpkg._hand_rolled'}),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
-        with patch(
-            'docnote_extract._extraction._wrapped_tracking_getattr',
-            autospec=True,
-            wraps=_wrapped_tracking_getattr
-        ) as tracking_getattr_watcher:
-            retval = floader.discover_and_extract()
-
+        retval = floader.discover_and_extract()
         to_inspect = retval[
             'docnote_extract_testpkg._hand_rolled.imports_from_parent']
+
+        registry = to_inspect.__docnote_extract_metadata__.tracking_registry
+        assert id(to_inspect.RENAMED_SENTINEL) in registry
+        assert registry[id(to_inspect.RENAMED_SENTINEL)] == (
+            'docnote_extract_testpkg._hand_rolled',
+            'SOME_SENTINEL')
 
         # Okay, so... I'd like to just check that call_count == 2. Except
         # it isn't, and it never will be (unless the implementation of
@@ -260,29 +249,20 @@ class TestExtractionFinderLoader:
         # stack dumps, so... well anyways. Machete mode debugging and all that.
         # Instead, for robustness, we'll just make sure that we had tracking
         # lookups against the correct attributes.
-        attr_targets = {
-            call_arg.args[0]
-            for call_arg in tracking_getattr_watcher.call_args_list}
-        module_targets = {
-            call_arg.kwargs['module_name']
-            for call_arg in tracking_getattr_watcher.call_args_list}
+        targets = set(registry.values())
+        assert len(targets) == 2
+        target1, target2 = targets
+        assert target1 is not None and target2 is not None
+        targets = cast(TrackingImportSource, targets)
+        module_targets = {target[0] for target in targets}
+        attr_targets = {target[1] for target in targets}
+
         assert attr_targets == {'SOME_CONSTANT', 'SOME_SENTINEL'}
         assert module_targets == {'docnote_extract_testpkg._hand_rolled'}
 
-        assert 'docnote_extract_testpkg._hand_rolled' \
-            in floader.module_stash_tracked
-        assert is_wrapped_tracking_module(
-            floader.module_stash_tracked[
-                'docnote_extract_testpkg._hand_rolled'])
         assert not is_crossreffed(to_inspect)
         assert not is_crossreffed(to_inspect.SOME_CONSTANT)
         assert not is_crossreffed(to_inspect.RENAMED_SENTINEL)
-
-        registry = to_inspect._docnote_extract_import_tracking_registry
-        assert id(to_inspect.RENAMED_SENTINEL) in registry
-        assert registry[id(to_inspect.RENAMED_SENTINEL)] == (
-            'docnote_extract_testpkg._hand_rolled',
-            'SOME_SENTINEL')
 
     @mocked_extraction_discovery([
             'docnote_extract_testpkg',
@@ -298,7 +278,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -321,7 +305,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -343,7 +331,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 
@@ -363,7 +355,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
 
         retval = floader.discover_and_extract()
 

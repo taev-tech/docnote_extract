@@ -1,4 +1,5 @@
 import pytest
+import templatey
 from docnote import ReftypeMarker
 
 from docnote_extract import Docnotes
@@ -23,6 +24,7 @@ def testpkg_docs() -> Docnotes[SummaryMetadata]:
     """
     return gather(
         ['docnote_extract_testpkg'],
+        enabled_stubs=True,
         special_reftype_markers={
             Crossref(
                 module_name='docnote_extract_testutils.for_handrolled',
@@ -30,24 +32,47 @@ def testpkg_docs() -> Docnotes[SummaryMetadata]:
             ReftypeMarker.METACLASS})
 
 
-class TestGatheringE2E:
+@pytest.fixture(scope='module')
+def finnr_docs() -> Docnotes[SummaryMetadata]:
+    """We want to do a bunch of spot checks against finnr, but
+    we only need to gather it once. Hence, we have a module-scoped
+    fixture that returns the gathered ``Docnotes``.
+    """
+    return gather(
+        ['finnr'],
+        enabled_stubs=True)
 
-    def test_expected_summaries(self, testpkg_docs: Docnotes[SummaryMetadata]):
+
+@pytest.fixture(scope='module')
+def templatey_docs() -> Docnotes[SummaryMetadata]:
+    """We want to do a bunch of spot checks against templatey, but
+    we only need to gather it once. Hence, we have a module-scoped
+    fixture that returns the gathered ``Docnotes``.
+    """
+    return gather(
+        ['templatey'],
+        enabled_stubs=False)
+
+
+class TestGatheringE2EFinnr:
+    """Runs end-to-end tests based on the finnr package.
+    """
+
+    def test_expected_summaries(self, finnr_docs: Docnotes[SummaryMetadata]):
         """The gathered result must contain the expected number of
         summaries, and it must contain the summary tree root.
         """
-        assert len(testpkg_docs.summaries) == 1
-        (pkg_name, tree_root), = testpkg_docs.summaries.items()
-        assert pkg_name == 'docnote_extract_testpkg'
+        assert len(finnr_docs.summaries) == 1
+        (pkg_name, tree_root), = finnr_docs.summaries.items()
+        assert pkg_name == 'finnr'
         assert isinstance(tree_root, SummaryTreeNode)
 
-    def test_spotcheck_money(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_spotcheck_money(self, finnr_docs: Docnotes[SummaryMetadata]):
         """A spot-check of the finnr money module must match the
         expected results.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        money_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.money')
+        (_, tree_root), = finnr_docs.summaries.items()
+        money_mod_node = tree_root.find('finnr.money')
         money_mod_summary = money_mod_node.module_summary
         resulting_names = {
             child.name
@@ -55,14 +80,13 @@ class TestGatheringE2E:
             if child.metadata.included}
         assert resulting_names == {'amount_getter', 'Money'}
 
-    def test_spotcheck_currency(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_spotcheck_currency(self, finnr_docs: Docnotes[SummaryMetadata]):
         """A spot-check of the finnr currency module must match the
         expected results. This is particularly concerned with the
         typespec values.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        currency_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.currency')
+        (_, tree_root), = finnr_docs.summaries.items()
+        currency_mod_node = tree_root.find('finnr.currency')
         currency_mod_summary = currency_mod_node.module_summary
         currency_summary = currency_mod_summary / GetattrTraversal('Currency')
         assert isinstance(currency_summary, ClassSummary)
@@ -98,13 +122,12 @@ class TestGatheringE2E:
         assert literal_value.toplevel_name == 'Singleton'
         assert literal_value.traversals == (GetattrTraversal('UNKNOWN'),)
 
-    def test_currencyset_call(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_currencyset_call(self, finnr_docs: Docnotes[SummaryMetadata]):
         """The ``CurrencySet.__call__`` summary must have a signature
         and not be disowned.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        currency_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.currency')
+        (_, tree_root), = finnr_docs.summaries.items()
+        currency_mod_node = tree_root.find('finnr.currency')
         currency_mod_summary = currency_mod_node.module_summary
         call_summary = (
             currency_mod_summary
@@ -120,14 +143,13 @@ class TestGatheringE2E:
         assert not signature_summary.metadata.disowned
         assert signature_summary.metadata.to_document
 
-    def test_spotcheck_iso(self, testpkg_docs: Docnotes[SummaryMetadata]):
+    def test_spotcheck_iso(self, finnr_docs: Docnotes[SummaryMetadata]):
         """A spot-check of the finnr iso module must match the
         expected results. In particular, the mint must be correctly
         assigned to the module, and not disowned.
         """
-        (_, tree_root), = testpkg_docs.summaries.items()
-        iso_mod_node = tree_root.find(
-            'docnote_extract_testpkg.taevcode.finnr.iso')
+        (_, tree_root), = finnr_docs.summaries.items()
+        iso_mod_node = tree_root.find('finnr.iso')
         iso_mod_summary = iso_mod_node.module_summary
         resulting_names = {
             child.name
@@ -142,3 +164,90 @@ class TestGatheringE2E:
             primary=Crossref(
                 module_name='finnr.currency', toplevel_name='CurrencySet'),
             params=())
+
+
+class TestGatheringE2ETemplatey:
+    """Runs end-to-end tests based on the templatey package.
+    """
+
+    def test_expected_summaries(
+            self, templatey_docs: Docnotes[SummaryMetadata]):
+        """The gathered result must contain the expected number of
+        summaries, and it must contain the summary tree root.
+        """
+        assert len(templatey_docs.summaries) == 1
+        (pkg_name, tree_root), = templatey_docs.summaries.items()
+        assert pkg_name == 'templatey'
+        assert isinstance(tree_root, SummaryTreeNode)
+
+    def test_spotcheck_bootstrapping(
+            self, templatey_docs: Docnotes[SummaryMetadata]):
+        """A spot-check of the templatey._bootstrapping module must
+        match the expected results.
+
+        Note: we've chosen the _bootstrapping module despite its
+        private-ness, because it has module-level constants that are
+        instances of imported classes, which (turns out) is a bit of a
+        stress test for extraction.
+        """
+        (_, tree_root), = templatey_docs.summaries.items()
+        module_node = tree_root.find('templatey._bootstrapping')
+        module_summary = module_node.module_summary
+        exported_names = {
+            child.name
+            for child in module_summary.members
+            if child.metadata.included}
+        assert exported_names == {
+            'EmptyTemplate',
+            # Note: this gets included because it's just a cast() of the
+            # EmptyTemplate class
+            'EMPTY_TEMPLATE_XABLE'}
+
+        all_names = {
+            child.name
+            for child in module_summary.members}
+        assert all_names == {
+            '__annotations__',
+            '__builtins__',
+            '__doc__',
+            '__docnote_extract_metadata__',
+            '__file__',
+            '__loader__',
+            '__name__',
+            '__package__',
+            '__spec__',
+            '_docnote_extract_stub_strat',
+            'ClassVar',
+            'EMPTY_INTERPOLATION_CONFIG',
+            'EMPTY_TEMPLATE_INSTANCE',
+            'EMPTY_TEMPLATE_XABLE',
+            'EmptyTemplate',
+            'InterpolationConfig',
+            'NamedInterpolator',
+            'NormalizedFieldset',
+            'PARSED_EMPTY_TEMPLATE',
+            'ParsedTemplateResource',
+            'TemplateConfig',
+            'TemplateIntersectable',
+            'annotations',
+            'cast',
+            'template'}
+
+    def test_spotcheck_templatey(
+            self, templatey_docs: Docnotes[SummaryMetadata]):
+        """A spot-check of the templatey module must
+        match the expected results.
+
+        Note: we've chosen the root templatey module because it
+        re-exports a bunch of other stuff. This exercises both the
+        filtering logic as well as making sure that things don't break
+        when we re-export stuff.
+        """
+        (_, tree_root), = templatey_docs.summaries.items()
+        module_node = tree_root.find('templatey')
+        module_summary = module_node.module_summary
+        exported_names = {
+            child.name
+            for child in module_summary.members
+            if child.metadata.included}
+        assert exported_names == set(templatey.__all__)

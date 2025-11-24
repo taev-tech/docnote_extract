@@ -5,7 +5,7 @@ import inspect
 import logging
 import sys
 import typing
-from collections import defaultdict
+from collections.abc import Collection
 from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -19,6 +19,7 @@ from importlib import import_module
 from importlib import reload as reload_module
 from importlib.abc import Loader
 from importlib.machinery import ModuleSpec
+from importlib.util import module_from_spec
 from types import ModuleType
 from typing import Annotated
 from typing import Any
@@ -29,15 +30,17 @@ from typing import cast
 from docnote import Note
 from docnote import ReftypeMarker
 
-from docnote_extract._module_tree import ModuleTreeNode
 from docnote_extract.crossrefs import Crossref
 from docnote_extract.crossrefs import make_crossreffed
+from docnote_extract.crossrefs import make_decorator_2o_crossreffed
+from docnote_extract.crossrefs import make_decorator_crossreffed
 from docnote_extract.crossrefs import make_metaclass_crossreffed
 from docnote_extract.discovery import discover_all_modules
 from docnote_extract.discovery import find_special_reftypes
 from docnote_extract.summaries import Singleton
 
-type TrackingRegistry = dict[int, tuple[str, str] | None]
+type TrackingImportSource = tuple[str, str]
+type TrackingRegistry = dict[int, TrackingImportSource | None]
 UNPURGEABLE_MODULES: Annotated[
         set[str],
         Note('''As noted in the stdlib documentation for the ``sys`` module,
@@ -51,6 +54,12 @@ UNPURGEABLE_MODULES: Annotated[
 NOHOOK_PACKAGES = {
     'docnote',
     'docnote_extract',
+    # Note: py is also from pytest
+    'py',
+    'pytest',
+    '_pytest',
+    '_virtualenv',
+    'typing_extensions',
 }
 _EXTRACTION_PHASE: ContextVar[_ExtractionPhase] = ContextVar(
     '_EXTRACTION_PHASE')
@@ -59,6 +68,21 @@ _MODULE_TO_INSPECT: ContextVar[str] = ContextVar('_MODULE_TO_INSPECT')
 _ACTIVE_TRACKING_REGISTRY: ContextVar[TrackingRegistry] = ContextVar(
     '_ACTIVE_TRACKING_REGISTRY')
 MODULE_ATTRNAME_STUBSTRATEGY = '_docnote_extract_stub_strat'
+_CLONABLE_IMPORT_ATTRS = {
+    '__package__',
+    '__path__',
+    '__file__',
+}
+# These are critical to avoid infinite recursion
+_UNTRACKED_IMPORT_ATTRS = {
+    *_CLONABLE_IMPORT_ATTRS,
+    '__spec__',
+    '__name__',
+    '__dict__',
+    '__loader__',
+    '__class__',
+    '__getattr__',
+}
 
 logger = logging.getLogger(__name__)
 
@@ -98,45 +122,32 @@ class _ExtractionFinderLoader(Loader):
 
     _: KW_ONLY
 
-    # See note in ``gather`` for explanations of these three config-able
-    # parameters
     special_reftype_markers: dict[Crossref, ReftypeMarker] = field(
         default_factory=dict)
-    # Note: full module name
-    nostub_firstparty_modules: frozenset[str] = field(
-        default_factory=frozenset)
-    # Note: root package, not individual modules
-    nostub_packages: frozenset[str] = field(default_factory=frozenset)
+    stubs_config: StubsConfig
 
     module_stash_prehook: dict[str, ModuleType] = field(
         default_factory=dict, repr=False)
-    # Mocking stubs. These are created lazily, as-needed, on-the-fly, whenever
-    # we need one -- but as with sys.modules, once it's been created, we'll
-    # return the same one, from this lookup.
-    module_stash_stubbed: dict[str, ModuleType] = field(
-        default_factory=dict, repr=False)
-    # Internals of the module are real, but any non-bypassed third-party
-    # deps are stubbed out. This is what we use for constructing specs, and
-    # for modules that need real versions of objects. Note that this version
-    # of it is the actual real module, NOT our tracking man-in-the-middle
-    # version of the module.
-    module_stash_nostub_raw: dict[str, ModuleType] = field(
-        default_factory=dict, repr=False)
-    # Same as above, but this is the tracked version. This is what we use
-    # during inspection to keep a registry of objects that were imported from
-    # a particular partial module. This will always be smaller than nostub_raw,
-    # because nostub_raw includes all first-party modules, but this only
-    # includes stubbed ones.
-    module_stash_tracked: dict[str, ModuleType] = field(
+    # Internals of the module are real, but any third-party stubs strategies
+    # are applied. This is what we use for constructing specs, and
+    # for modules that need real versions of objects. Note that this can also
+    # contain third-party modules -- it all depends on the stubs strategies!
+    module_stash_raw: dict[str, ModuleType] = field(
         default_factory=dict, repr=False)
     # This is used for marking things dirty.
     inspected_modules: set[str] = field(default_factory=set, repr=False)
+    # This is set immediately after stashing prehook modules to determine what
+    # the minimum set of known-clean modules is, so we can revert to this state
+    # between extractions
+    known_clean_modules: set[str] = field(default_factory=set, repr=False)
 
     def discover_and_extract(self) -> dict[str, ModulePostExtraction]:
         ctx_token = _EXTRACTION_PHASE.set(_ExtractionPhase.HOOKED)
         try:
             logger.info('Stashing prehook modules and installing import hook.')
             self._stash_prehook_modules()
+            self._shim_dataclasses()
+            self.known_clean_modules.update(sys.modules)
             self.install()
 
             # We're relying upon the full exploration here to import all
@@ -149,36 +160,15 @@ class _ExtractionFinderLoader(Loader):
             self.special_reftype_markers.update(
                 find_special_reftypes(firstparty_modules.values()))
             firstparty_names = frozenset(firstparty_modules)
-            self._stash_firstparty_or_nostub_raw()
-            # We need to clean up everything here because we'll be
-            # transitioning into tracked modules instead of the raw ones
-            logger.info('Exploration done; cleaning up sys.modules.')
-            self.cleanup_sys(self._get_all_dirty_modules())
-
-            # We want to preemptively create tracking or stub versions of all
-            # first-party modules; this ensures we have the cleanest,
-            # stubbiest-possible collection of firstparty modules.
-            # We might not **need** all of these, but stubbing is quick (since
-            # we don't need an exec), and this dramatically improves our
-            # reliability.
-            logger.info('Starting preparation phase.')
-            _EXTRACTION_PHASE.set(_ExtractionPhase.PREPARATION)
-            self._prepare_firstparty_stubs_or_tracking(firstparty_names)
-
-            # Clean everything one more time in case there were weird import
-            # deps in the firstparty nostub modules
-            logger.info('Preparation done; cleaning up sys.modules.')
-            self.cleanup_sys(self._get_all_dirty_modules())
+            self._stash_raw_modules()
+            # Note: we don't need to clean up anything here, because we do it
+            # at the start of every iteration during extraction.
 
             logger.info('Starting extraction phase.')
             _EXTRACTION_PHASE.set(_ExtractionPhase.EXTRACTION)
-
-            # Since extraction doesn't use imports to generate the extracted
-            # module, we can prepopulate once, instead of needing to do it for
-            # every module.
-            self._prepopulate_sys(firstparty_names)
             retval: dict[str, ModulePostExtraction] = {}
             for module_name in firstparty_names:
+                self.cleanup_sys(self._get_all_dirty_modules())
                 retval[module_name] = self.extract_firstparty(module_name)
 
             # Note that uninstall will handle final cleanup
@@ -194,17 +184,21 @@ class _ExtractionFinderLoader(Loader):
                 _EXTRACTION_PHASE.reset(ctx_token)
                 self._unstash_prehook_modules()
 
-    def _stash_firstparty_or_nostub_raw(self):
+    def _stash_raw_modules(self):
         """This checks sys.modules for any firstparty or nostub modules,
-        adding references to them within ``module_stash_nostub_raw``.
+        adding references to them within ``module_stash_raw``.
         """
         for fullname, module in sys.modules.items():
             package_name, _, _ = fullname.partition('.')
             if (
-                package_name in self.firstparty_packages
-                or package_name in self.nostub_packages
+                # Note that this excludes stdlib and other bypasses
+                self.stubs_config.use_stub_strategy(fullname) is not None
+                # Note that this condition is only relevant if we're extracting
+                # something that is contained in the bypass list, ex docnote
+                # itself
+                or package_name in self.firstparty_packages
             ):
-                self.module_stash_nostub_raw[fullname] = module
+                self.module_stash_raw[fullname] = module
 
     def extract_firstparty(
             self,
@@ -222,53 +216,40 @@ class _ExtractionFinderLoader(Loader):
         try:
             with _activatate_tracking_registry(import_tracking_registry):
                 # HERE BE DRAGONS.
-                # Whatever you do, do **NOT** import the module here. The
-                # import system will overwrite our prepared submodule attrs
-                # on existing tracking/stub modules, causing heisenbugs.
-                # Especially pernicious: the problems are order-dependent,
-                # meaning that our use of sets will cause things to sometimes
-                # pass our test suite.
-                # KEEP THIS OUT OF THE IMPORT SYSTEM AT ALL COSTS!
-                nostub_module = self.module_stash_nostub_raw[module_name]
-                spec = ModuleSpec(
-                    name=module_name,
-                    loader=self,
-                    loader_state=_DelegatedLoaderState(
-                        fullname=module_name,
-                        is_firstparty=True,
-                        delegated_module=nostub_module,
-                        stub_strategy=_StubStrategy.INSPECT))
-                nostub_module_spec = getattr(nostub_module, '__spec__', None)
-                _clone_spec_attrs(nostub_module_spec, spec)
-
-                module_source = inspect.getsource(nostub_module)
-                extracted_module = cast(
-                    ModulePostExtraction,
-                    _clone_import_attrs(
-                        self.module_stash_nostub_raw[module_name],
-                        spec))
-
+                # This is extremely delicate. On the one hand, we need to make
+                # sure to respect the import semantics. That means that the
+                # parent modules of a particular module must always be
+                # available on sys.modules, even if only partially-initialized.
+                # But at the same time, we need to work around the fact that
+                # the import system will opaquely modify the namespace of
+                # modules as their children are imported (to add the relname
+                # of the child into its parent's __dict__). This means that we
+                # have to be extremely careful about any pre-work we do (in
+                # fact, it's part of the reason we have to recreate stubs and
+                # tracking modules every single time we inspect a module).
+                # Simultaneously, you have libraries -- including stdlib ones
+                # like dataclasses -- relying upon the module in question being
+                # available in sys.modules. So you can't bypass the import
+                # system entirely.
+                # So although yes, we are "just" importing the module here and
+                # relying upon our import hook to correctly detect it being the
+                # module under inspection, this only works because of the
+                # extremely delicate dance of everything else we're doing here.
                 logger.info(
-                    'Re-execing module for inspection: %s', module_name)
-
-                # Putting the partially-completed module into sys.modules
-                # prevents other things (some stdlib code -- ex dataclasses --
-                # does WEIRD stuff with imports) from getting a stubbed ref
-                # to the module we're inspecting
-                stub_module = sys.modules.pop(module_name)
-                sys.modules[module_name] = extracted_module
-                # This allows us to also get references hidden behind circular
-                # imports
-                typing.TYPE_CHECKING = True
+                    'Re-IMPORTing module for inspection: %s', module_name)
                 try:
-                    exec(module_source, extracted_module.__dict__)  # noqa: S102
+                    extracted_module = cast(
+                        ModulePostExtraction,
+                        import_module(module_name))
+                    metadata = extracted_module.__docnote_extract_metadata__
+                    self._recover_typecheck_blocks_via_second_inspectee_reexec(
+                        module_name,
+                        metadata.sourcecode,
+                        extracted_module.__dict__)
+
                 finally:
-                    typing.TYPE_CHECKING = False
-                    sys.modules[module_name] = stub_module
                     self.inspected_modules.add(module_name)
 
-            extracted_module._docnote_extract_import_tracking_registry = (
-                import_tracking_registry)
             return extracted_module
         finally:
             _MODULE_TO_INSPECT.reset(inspect_ctx_token)
@@ -319,24 +300,113 @@ class _ExtractionFinderLoader(Loader):
 
         cls.cleanup_sys(modules_to_remove)
 
-    def _prepopulate_sys(self, firstparty_names: frozenset[str]):
-        """Just to **make damn sure** that we have the correct modules
-        in place during extraction, we preemptively populate sys.modules
-        with all of our firstparty stubs/tracking modules.
+    def _reexec_tracking_wrapper(
+            self,
+            module_name: str,
+            module_source: str,
+            dest_module: ModuleType
+            ) -> None:
+        """See the docstring for ``_FirstpartyTrackingModule`` if you
+        need to make sense of this.
 
-        This potentially also speeds up extraction marginally by
-        bypassing the import hook, but this is really just a happy
-        coincidence.
+        The most important thing to keep in mind for this particular
+        method is that we need to undo the ``typing.TYPE_CHECKING``
+        override done as part of inspection, lest we encounter circular
+        imports.
         """
-        # Note: order doesn't matter here, since we're bypassing imports
-        # entirely.
-        for module_name in firstparty_names:
-            if module_name in self.nostub_firstparty_modules:
-                target_module = self.module_stash_tracked[module_name]
-            else:
-                target_module = self.module_stash_stubbed[module_name]
+        logger.info('Re-exec-ing module for tracking: %s', module_name)
 
-            sys.modules[module_name] = target_module
+        # We need to first undo any changes we might have made to
+        # the type checking flag as part of re-execing the current
+        # inspectee. This prevents us getting stuck in an import
+        # cascade that ultimately turns into a circular import.
+        existing_typecheck_flag = typing.TYPE_CHECKING
+        try:
+            typing.TYPE_CHECKING = False
+            exec(module_source, dest_module.__dict__)  # noqa: S102
+        except Exception:
+            # The traceback we get for this is miserable, so double-log so that
+            # we get more info (at least the damn module name, seriously)
+            logger.exception('Failed to re-exec %s', module_name)
+            raise
+        finally:
+            typing.TYPE_CHECKING = existing_typecheck_flag
+
+    def _reexec_inspectee_module(
+            self,
+            module_name: str,
+            module_source: str,
+            dest_namespace: dict[str, Any]):
+        """For now, this just wraps the re-exec around some logging.
+        However, after the import is done (but before extraction
+        completes for the module), this gets followed up by
+        ``_recover_typecheck_blocks_via_second_inspectee_reexec``.
+        """
+        logger.info('Re-exec-ing module for inspection: %s', module_name)
+        # Now we can re-exec with the normal TYPE_CHECKING flag.
+        try:
+            exec(module_source, dest_namespace)  # noqa: S102
+        except Exception:
+            # The traceback we get for this is miserable, so double-log so that
+            # we get more info (at least the damn module name, seriously)
+            logger.exception('Failed to re-exec %s', module_name)
+            raise
+
+    def _recover_typecheck_blocks_via_second_inspectee_reexec(
+            self,
+            module_name: str,
+            module_source: str,
+            dest_namespace: dict[str, Any]):
+        """Re-exec'ing the module under inspection is a bit more
+        complicated than it first might seem, because we need to make
+        any names hidden behind ``if typing.TYPE_CHECKING:`` blocks
+        available for analysis after extraction. We also need to avoid
+        having non-identical (as in, same ``id()``) objects between any
+        quasi-circular deps hidden behind those blocks, so we can't
+        simply call exec twice and overwrite the values there. AND we
+        can't do this as part of the normal import path, because the
+        import system is "smart" enough to detect that circular imports
+        are trying to import from a partially-initialized module, and
+        fail.
+
+        Instead, our strategy is:
+        1.. exec the module normally within ``_reexec_inspectee_module``
+            (ie, with typing.TYPE_CHECKING set to false). This will also
+            carry through to any downstream imports.
+        2.. then, within the parent ``extract_firstparty`` that called
+            the ``import_module`` that resulted in the initial reexec
+            call, but **after** that has finished, call this method.
+        3.. re-exec the module into a separate, temporary dict, setting
+            typing.TYPE_CHECKING to true. **This needs to then be
+            overridden in any downstream imports.**
+        4.. add any missing values discovered in the second execution
+            back to the destination namespace
+        """
+        logger.info(
+            'Recovering imports hidden behind ``if typing.TYPE_CHECKING``: '
+            + 'blocks via inspectee re-exec: %s', module_name)
+        # Copy over the entire existing namespace from the module, including
+        # anything that was already defined there. This ensures that it is
+        # fully populated with the real objects defined there before we expand
+        # the namespace. Yes, those values will then be overwritten when we
+        # execute the body of the module, but we simply won't copy those keys
+        # back to the dest_namespace!
+        expanded_namespace = {**dest_namespace}
+        self._make_fake_typeshed()
+        typing.TYPE_CHECKING = True
+        try:
+            exec(module_source, expanded_namespace)  # noqa: S102
+        except Exception:
+            # The traceback we get for this is miserable, so double-log so that
+            # we get more info (at least the damn module name, seriously)
+            logger.exception('Failed to re-exec %s', module_name)
+            raise
+        finally:
+            typing.TYPE_CHECKING = False
+
+        for key, value in expanded_namespace.items():
+            if key not in dest_namespace:
+                dest_namespace[key] = value
 
     @classmethod
     def cleanup_sys(cls, modules_to_remove: set[str]) -> None:
@@ -359,25 +429,50 @@ class _ExtractionFinderLoader(Loader):
         at the finder/loader. Use this to clean sys.modules when
         transitioning between phases.
         """
-        modules: set[str] = set()
-        modules.update(self.module_stash_stubbed)
-        modules.update(self.module_stash_nostub_raw)
-        modules.update(self.module_stash_tracked)
-        modules.update(self.inspected_modules)
-        return modules
+        module_names: set[str] = set()
 
-    def _get_firstparty_dirty_modules(self) -> set[str]:
-        """Same as above, but limited just to the firstparty modules.
-        Use this between inspecting individual firstparty modules.
+        for module_name in sys.modules:
+            package_name, _, _ = module_name.partition('.')
+            if (
+                package_name not in NOHOOK_PACKAGES
+                and package_name not in sys.stdlib_module_names
+            ):
+                module_names.add(module_name)
+
+        module_names.difference_update(self.known_clean_modules)
+        module_names.difference_update(UNPURGEABLE_MODULES)
+        return module_names
+
+    def _make_fake_typeshed(self):
+        """Occasionally, libraries may import from ``_typeshed``. This
+        causes issues (obviously) if it isn't available at runtime, but
+        it's not really a package that can be installed. Therefore, we
+        **always** create a stub for it.
         """
-        retval: set[str] = set()
-        all_modules = self._get_all_dirty_modules()
-        for module in all_modules:
-            pkg_name, _, _ = module.partition('.')
-            if pkg_name in self.firstparty_packages:
-                retval.add(module)
+        spec = ModuleSpec(name='_typeshed', loader=None)
+        module = module_from_spec(spec)
+        module.__getattr__ = partial(
+            _stubbed_getattr,
+            module_name='_typeshed',
+            special_reftype_markers=self.special_reftype_markers)
+        sys.modules['_typeshed'] = module
 
-        return retval
+    def _shim_dataclasses(self):
+        """Dataclasses generates its own docstring for classes that
+        simply repeats the signature. This can needlessly break the
+        docstring parsing, since it will conflict with any configured
+        markup language (via the docnote config). Therefore, we add a
+        light shim on dataclasses that restores the original defined
+        docstring on the class, even if there was none, after doing the
+        transform.
+        """
+        logger.debug('Shimming dataclasses in sys.modules')
+        self.module_stash_prehook['dataclasses'] = dataclasses
+        patched_dataclasses = _clone_import_attrs(
+            src_module=dataclasses,
+            spec=dataclasses.__spec__)
+        patched_dataclasses.__getattr__ = _patched_dataclass_getattr
+        sys.modules['dataclasses'] = patched_dataclasses
 
     def _stash_prehook_modules(self):
         """This checks all of sys.modules, stashing and removing
@@ -385,36 +480,14 @@ class _ExtractionFinderLoader(Loader):
         """
         prehook_module_names = sorted(sys.modules)
         for prehook_module_name in prehook_module_names:
-            package_name, _, _ = prehook_module_name.partition('.')
+            stub_strategy = self.stubs_config.use_stub_strategy(
+                prehook_module_name)
 
-            if package_name == 'dataclasses':
-                self.module_stash_prehook['dataclasses'] = dataclasses
-                patched_dataclasses = ModuleType('dataclasses')
-                patched_dataclasses.__getattr__ = _patched_dataclass_getattr
-                sys.modules['dataclasses'] = patched_dataclasses
-
-            if (
-                package_name not in sys.stdlib_module_names
-                and package_name not in NOHOOK_PACKAGES
-            ):
-                logger.debug('Stashing prehook module %s', prehook_module_name)
-
-                # This is purely to save us needing to reimport the package
-                # to build out a raw package for use during the exploration
-                # phase. The only difference is that we're not popping it;
-                # we're JUST stashing it so it can be restored after
-                # uninstalling the import hook.
-                if (
-                    package_name in self.nostub_packages
-                    or package_name in self.firstparty_packages
-                ):
-                    prehook_module = sys.modules[prehook_module_name]
-
-                else:
-                    logger.debug(
-                        'Popping %s from sys.modules for stash',
-                        prehook_module_name)
-                    prehook_module = sys.modules.pop(prehook_module_name)
+            if stub_strategy is not None:
+                logger.debug(
+                    'Popping %s from sys.modules for stash',
+                    prehook_module_name)
+                prehook_module = sys.modules.pop(prehook_module_name)
 
                 self.module_stash_prehook[prehook_module_name] = prehook_module
 
@@ -423,70 +496,59 @@ class _ExtractionFinderLoader(Loader):
             logger.info('Restoring prehook module %s', name)
             sys.modules[name] = module
 
-    def _prepare_firstparty_stubs_or_tracking(
+    def _prepare_stub_or_tracking_module(
             self,
-            firstparty_names: frozenset[str]):
-        """We use this to eagerly construct stubs or tracking wrappers
-        for all firstparty modules **before** any module is under
-        inspection. That way, we have the absolute bare minimum of real
-        modules, and we don't need to constantly re-create the
-        firstparty tracking modules to accommodate which modules were
-        unstubbed because they were under inspection. We also avoid a
-        bunch of import instability because we're violating underlying
-        assumptions of the import system.
+            module_name: str,
+            spec: ModuleSpec,
+            target_module: ModuleType
+            ):
+        """We use this to construct stub and/or tracking wrappers for
+        modules. This is done on an as-needed basis, as modules are
+        imported during the re-execution of the module-under-inspection.
 
-        This also add the submodules as attributes in each module, and
-        sets the ``__all__`` for modules as required.
+        Tracking/stub modules are single use; they are discarded as soon
+        as the inspectee module is fully extracted. This prevents issues
+        with inconsistent stubbing state of circular import loops, and
+        other such ^^incredibly difficult to diagnose and/or fix^^
+        errors.
         """
-        # We want to order this such that shallower levels are always done
-        # before deeper ones; that way we avoid weird edge cases from the
-        # import system implicitly loading parent levels
-        by_depth = defaultdict(list)
-        for name in firstparty_names:
-            by_depth[name.count('.')].append(name)
+        raw_module = self.module_stash_raw.get(module_name)
+        if raw_module is None:
+            logging.debug(
+                'No raw module found for %s. This is expected if the module '
+                + 'will be a stubbed, uninstalled third-party dep, but in '
+                + 'other scenarios this would indicate an error. At any rate, '
+                + "we'll be assuming a nonempty __path__.",
+                module_name)
+            # Always set this to indicate that it has submodules. We can't
+            # know this without a nostub module, so we always just set it.
+            # It we don't, attempts to import subpackages will break.
+            target_module.__path__ = []
 
-        for module_names_for_depth in by_depth.values():
-            for module_name in module_names_for_depth:
-                # The import hook will manage stub vs tracking for us; we don't
-                # need to worry about it
-                import_module(module_name)
+            return
 
-        name_tree = ModuleTreeNode.from_discovery(firstparty_names)
-        for name_tree_root in name_tree.values():
-            for name_node in name_tree_root.flatten():
-                module_name = name_node.fullname
-                nostub_module = self.module_stash_nostub_raw[module_name]
+        logger.debug(
+            'Raw module exists for %s; cloning import attrs', module_name)
+        _clone_import_attrs(raw_module, spec, dest_module=target_module)
 
-                if module_name in self.nostub_firstparty_modules:
-                    target_module = self.module_stash_tracked[module_name]
-                else:
-                    target_module = self.module_stash_stubbed[module_name]
+        # Note: we ONLY want to do this for modules that define an
+        # __all__. If you're doing star intra-project starred imports
+        # and **not** defining an __all__, we really can't help you.
+        # Any workaround is inherently super dangerous, because we
+        # might, for example, accidentally clobber the importing
+        # module's __name__, which would break relative imports in
+        # an extremely-difficult-to-debug way.
+        if hasattr(raw_module, '__all__'):
+            # pyright doesn't like modules not necessarily having an
+            # __all__, hence the ignore directive
+            target_module.__all__ = tuple(raw_module.__all__)  # type: ignore
 
-                # Note: we ONLY want to do this for modules that define an
-                # __all__. If you're doing star intra-project starred imports
-                # and **not** defining an __all__, we really can't help you.
-                # Any workaround is inherently super dangerous, because we
-                # might, for example, accidentally clobber the importing
-                # module's __name__, which would break relative imports in
-                # an extremely-difficult-to-debug way.
-                if hasattr(nostub_module, '__all__'):
-                    # pyright doesn't like modules not necessarily having an
-                    # __all__, hence the ignore directive
-                    target_module.__all__ = tuple(nostub_module.__all__)  # type: ignore
-
-                # And now we need to populate the children as attributes on
-                # the parent.
-                for child_node in name_node.children.values():
-                    child_name = child_node.fullname
-                    if child_name in self.nostub_firstparty_modules:
-                        child_module = self.module_stash_tracked[child_name]
-                    else:
-                        child_module = self.module_stash_stubbed[child_name]
-
-                    setattr(
-                        target_module,
-                        child_node.relname,
-                        child_module)
+        # We don't want to copy the attribute, because it doesn't have
+        # semantic meaning for us. However, we do want to make sure that
+        # its (non-)existence matches the original, since it has meaning
+        # for the import system
+        if hasattr(raw_module, '__path__'):
+            target_module.__path__ = []
 
     def find_spec(
             self,
@@ -499,28 +561,21 @@ class _ExtractionFinderLoader(Loader):
         ++  what strategy we're going to take for loading
         etc.
         """
+        stub_strategy = self.stubs_config.use_stub_strategy(fullname)
         base_package, *_ = fullname.split('.')
-
-        # Note that base_package is correct here; stdlib doesn't add in
-        # every submodule.
-        if base_package in sys.stdlib_module_names:
-            logger.debug('Bypassing wrapping for stdlib module %s.', fullname)
-            return None
-        if base_package in NOHOOK_PACKAGES:
+        if stub_strategy is None:
             logger.debug(
-                'Bypassing tracker wrapping for %s via hard-coded third party '
-                + 'nohook package %s',
+                'Bypassing wrapping for %s, either as stdlib module or via '
+                + 'hard-coded third party nohook package %s',
                 fullname, base_package)
             return None
 
-        # Thirdparty packages not marked with nostub will ALWAYS return a
-        # stub package as long as the import hook is installed, regardless of
-        # extraction phase. Otherwise, we'd need them to be installed in the
-        # docs virtualenv, reftypes would never be generated, etc etc etc.
-        if (
-            base_package not in self.firstparty_packages
-            and base_package not in self.nostub_packages
-        ):
+        # If a stub strategy is active for a thirdparty package, it will always
+        # return a stub (as long as the import hook is installed), regardless
+        # of extraction phase.
+        # Note: simple truthiness works here because we already filtered out
+        # the Nones (just above!)
+        if base_package not in self.firstparty_packages and stub_strategy:
             logger.debug('Will return stub spec for %s', fullname)
             # We don't need any loader state here; we're just going to stub it
             # completely, so we can simply return a plain spec.
@@ -581,23 +636,17 @@ class _ExtractionFinderLoader(Loader):
         # first, because you might have a nostub firstparty module under
         # inspection, and we need to short-circuit the other checks.
         if fullname == module_to_inspect:
-            logger.warning(
-                'Direct import detected of a module currently under '
-                + 'inspection (%s). This is either a circular import, or an '
-                + 'error. Downstream code may break. Returning a stub.',
-                fullname)
-            stub_strategy = _StubStrategy.STUB
-        elif (
-            fullname in self.nostub_firstparty_modules
-            or base_package in self.nostub_packages
-        ):
-            logger.debug('Returning TRACK stub strategy for %s', fullname)
-            stub_strategy = _StubStrategy.TRACK
-        else:
+            stub_strategy = _StubStrategy.INSPECT
+        # Note that truthiness is okay because we already returned a None
+        # spec for anything that is a None stub strategy.
+        elif self.stubs_config.use_stub_strategy(fullname):
             logger.debug('Returning STUB stub strategy for %s', fullname)
             stub_strategy = _StubStrategy.STUB
+        else:
+            logger.debug('Returning TRACK stub strategy for %s', fullname)
+            stub_strategy = _StubStrategy.TRACK
 
-        raw_module = self.module_stash_nostub_raw[fullname]
+        raw_module = self.module_stash_raw[fullname]
         spec = ModuleSpec(
             name=fullname,
             loader=self,
@@ -613,21 +662,11 @@ class _ExtractionFinderLoader(Loader):
         return spec
 
     def create_module(self, spec: ModuleSpec) -> None | ModuleType:
-        """What we do here depends on the stubbing strategy for the
-        module.
-
-        If we're going to ``_StubbingStrategy.STUB`` the module, we
-        don't need to do anything special; we can just return None and
-        allow normal semantics to happen.
-
-        Otherwise, though, we're going to delegate the loading to a
-        different finder/loader, which means we need to do a bit of
-        black magic. We need to keep the delegated loader's version of
-        the module, and that then, in turn, needs to be the thing that's
-        actually used in the ^^delegated^^ ``exec_module``. However, we
-        internally need to preserve our own **separate** module object
-        for use as the wrapper, which we then use for our own
-        ``exec_module``.
+        """Since we always create fresh tracking/stubbing modules for
+        each inspectee, we really don't have anything special to do
+        here; we can simply rely upon the default stdlib import
+        mechanics to create the module object for us, and then populate
+        it during ``exec_module``.
         """
         loader_state = spec.loader_state
         if not isinstance(loader_state, _ExtractionLoaderState):
@@ -636,56 +675,32 @@ class _ExtractionFinderLoader(Loader):
                 + 'and may cause stuff to break.', spec.name)
             return None
 
-        # Note: this needs to be ahead of the _DelegatedLoaderState check,
-        # since this might be a stubbed firstparty module!
-        if loader_state.stub_strategy is _StubStrategy.STUB:
-            if loader_state.fullname in self.module_stash_stubbed:
-                logger.debug(
-                    'Using cached stub module for %s', loader_state.fullname)
-                loader_state.from_stash = True
-                return self.module_stash_stubbed[loader_state.fullname]
-
-            else:
-                logger.debug(
-                    'Using default module machinery for stubbed module: %s',
-                    loader_state.fullname)
-
-        # This could be either: firstparty inspect, firstparty nostub, or
-        # thirdparty nostub.
-        else:
+        if (
+            loader_state.stub_strategy is _StubStrategy.TRACK
+            and loader_state.is_firstparty
+        ):
             if not isinstance(loader_state, _DelegatedLoaderState):
                 # Theoretically impossible. Indicates a bug.
+                # Note that, since we're just (eventually) going to exec()
+                # the module source into the module's __dict__, we can "safely"
+                # return a normal module object (or at least, "safely" as in
+                # "non-catastrophic failure")
                 logger.warning(
                     'Likely bug: delegated/nostub ``_StubStrategy`` without '
                     + '``_DelegatedLoaderState``! Tracking and/or inspection '
                     + 'will break for %s.', loader_state.fullname)
-
-            else:
-                # We don't have a stash for inspected modules (because they're
-                # only used once), so we only need to check this one stash.
-                if loader_state.fullname in self.module_stash_tracked:
-                    logger.debug(
-                        'Using cached tracking module for %s',
-                        loader_state.fullname)
-                    loader_state.from_stash = True
-                    return self.module_stash_tracked[loader_state.fullname]
-
-                # This can happen either during preparation (for firstparty
-                # nostub/tracking modules) or during inspection (for the module
-                # being inspected)
-                logger.debug(
-                    'Creating new delegated module %s for inspection or '
-                    + 'tracking (firstparty: %s, under inspection: %s)',
-                    loader_state.fullname, loader_state.is_firstparty,
-                    loader_state.stub_strategy is _StubStrategy.INSPECT)
-
-                # In all 3 cases, we use the default module creation semantics,
-                # because we're only going to be referencing or retrieving
-                # source from the already-loaded module, and not relying upon
-                # the import system for delegation.
                 return None
 
-    def exec_module(self, module: ModuleType):  # noqa: PLR0912
+            module = _FirstpartyTrackingModule(spec.name)
+            _clone_import_attrs(
+                loader_state.delegated_module,
+                spec,
+                dest_module=module)
+            return module
+
+        return None
+
+    def exec_module(self, module: ModuleType):
         """Ah, at long last: the final step of the import process.
         We have a module object ready to go and a spec with a
         ``loader_state``, which itself contains a ``stub_strategy``
@@ -704,10 +719,6 @@ class _ExtractionFinderLoader(Loader):
         In the ``TRACK`` strategy, we need to first let the delegated
         loader ``exec_module`` on its prepared module object from
         ``create_module``. We then wrap this into a tracking module.
-
-        In both of those cases, we need to remember to cache the
-        resulting object (and check the ``from_stash`` attribute to
-        potentially bypass loading ``exec`` entirely).
 
         In the ``INSPECT`` strategy, we again let the delegated loader
         ``exec_module`` on its prepared module object. However here, we
@@ -730,46 +741,21 @@ class _ExtractionFinderLoader(Loader):
                 module.__name__)
             return
 
+        module_name = module.__name__
+        self._prepare_stub_or_tracking_module(
+            module_name,
+            spec,
+            module)
+
         loader_state = spec.loader_state
-        # We don't need to do anything when returning stashed modules; they've
-        # already been populated.
-        if loader_state.from_stash:
-            # Note: better hope the import system didn't mess around with our
-            # stuff in the meantime...
-            logger.debug(
-                'Delegated module from stash %s; exec_module will noop',
-                loader_state.fullname)
-            return
-
         if loader_state.stub_strategy is _StubStrategy.STUB:
-            module_name = module.__name__
             logger.debug('Stubbing module: %s', module_name)
-
-            if (
-                (real_module := self.module_stash_nostub_raw.get(module_name))
-                is not None
-            ):
-                logger.debug(
-                    'Nostub module exists for %s; cloning import attrs',
-                    module_name)
-                _clone_import_attrs(real_module, spec, dest_module=module)
-
-            else:
-                logger.debug(
-                    'Lacking nostub module for %s. Assuming nonempty __path__',
-                    module_name)
-                # Always set this to indicate that it has submodules. We can't
-                # know this without a nostub module, so we always just set it.
-                # It we don't, attempts to import subpackages will break.
-                module.__path__ = []
-
             # Do this after the above, otherwise the hasattrs while cloning
             # import attrs will return false positives
             module.__getattr__ = partial(
                 _stubbed_getattr,
-                module_name=module.__name__,
+                module_name=module_name,
                 special_reftype_markers=self.special_reftype_markers)
-            self.module_stash_stubbed[loader_state.fullname] = module
 
         elif isinstance(loader_state, _DelegatedLoaderState):
             real_module = loader_state.delegated_module
@@ -779,14 +765,16 @@ class _ExtractionFinderLoader(Loader):
                     'Wrapping module w/ tracking proxy: %s',
                     loader_state.fullname)
                 module = cast(WrappedTrackingModule, module)
+
                 # Firstparty tracking needs to re-exec'd, because the stub
-                # state of other firstparty modules has changed. Note that we
-                # only do this once, eagerly (during the preparation phase),
-                # so that we're not constantly recreating tracking modules.
+                # state of other firstparty modules may have changed, and there
+                # might be downstream imports of those modules.
                 if loader_state.is_firstparty:
                     module_source = inspect.getsource(real_module)
-                    delegated_module = _clone_import_attrs(real_module, spec)
-                    exec(module_source, delegated_module.__dict__)  # noqa: S102
+                    self._reexec_tracking_wrapper(
+                        module_name,
+                        module_source,
+                        module)
 
                 # Thirdparty tracking can just reuse the real module directly
                 # for its attr lookups, because thirdparty stub state never
@@ -794,18 +782,24 @@ class _ExtractionFinderLoader(Loader):
                 else:
                     delegated_module = real_module
 
-                module.__getattr__ = partial(
-                    _wrapped_tracking_getattr,
-                    module_name=module.__name__,
-                    src_module=delegated_module)
-                module._docnote_extract_src_module = delegated_module
-                self.module_stash_tracked[loader_state.fullname] = module
+                    module.__getattr__ = partial(
+                        _wrapped_tracking_getattr,
+                        module_name=module.__name__,
+                        src_module=delegated_module)
+                    module._docnote_extract_src_module = delegated_module
 
             # See note in extract_firstparty for the reasoning here.
             elif loader_state.stub_strategy is _StubStrategy.INSPECT:
-                raise ValueError(
-                    'Cannot directly import modules under inspection!',
-                    loader_state.fullname)
+                module = cast(ModulePostExtraction, module)
+                module_source = inspect.getsource(real_module)
+                self._reexec_inspectee_module(
+                    module_name,
+                    module_source,
+                    module.__dict__)
+                registry = _ACTIVE_TRACKING_REGISTRY.get(None)
+                module.__docnote_extract_metadata__ = ExtractionMetadata(
+                        tracking_registry=registry or {},
+                        sourcecode=module_source)
 
             else:
                 logger.error(
@@ -813,13 +807,6 @@ class _ExtractionFinderLoader(Loader):
                     + '``exec_module``! Will noop; expect import errors!',
                     loader_state.fullname)
                 return
-
-            # We don't want to copy the attribute, because it doesn't have
-            # semantic meaning for us. However, we do want to make sure that
-            # its (non-)existence matches the original, since it has meaning
-            # for the import system
-            if hasattr(real_module, '__path__'):
-                module.__path__ = []
 
         else:
             logger.error(
@@ -870,20 +857,17 @@ def _clone_import_attrs(
         dest_module.__spec__ = spec
         dest_module.__loader__ = spec.loader
 
-    if hasattr(src_module, '__package__'):
-        dest_module.__package__ = src_module.__package__
-    elif hasattr(dest_module, '__package__'):
-        delattr(dest_module, '__package__')
-
-    if hasattr(src_module, '__path__'):
-        dest_module.__path__ = []
-    elif hasattr(dest_module, '__path__'):
-        delattr(dest_module, '__path__')
-
-    if hasattr(src_module, '__file__'):
-        dest_module.__file__ = src_module.__file__
-    elif hasattr(dest_module, '__file__'):
-        delattr(dest_module, '__file__')
+    # This is a little bit hard to read, but we're checking for the import attr
+    # on the source module. If we find it, we copy it over. It we don't find
+    # it, we check the dest module and delete any existing one there, so that
+    # the existence or non-existence matches between them.
+    for import_attr_name in _CLONABLE_IMPORT_ATTRS:
+        if hasattr(src_module, import_attr_name):
+            setattr(
+                dest_module, import_attr_name,
+                getattr(src_module, import_attr_name))
+        elif hasattr(dest_module, import_attr_name):
+            delattr(dest_module, import_attr_name)
 
     return dest_module
 
@@ -953,7 +937,6 @@ class _ExtractionLoaderState:
     fullname: str
     is_firstparty: bool
     stub_strategy: _StubStrategy
-    from_stash: bool = False
 
     @property
     def toplevel_package(self) -> str:
@@ -987,6 +970,12 @@ def _wrapped_tracking_getattr(
     indicate that we no longer know definitively where the object came
     from.
     """
+    # These are always correct, so never delegate them.
+    # (keep in mind that __getattr__ only gets called if these were missing in
+    # the __dict__!)
+    if name in _CLONABLE_IMPORT_ATTRS:
+        raise AttributeError(name)
+
     logger.debug(
         'Detected attribute access at wrapped tracking module %s:%s; '
         + 'delegating to %s (id=%s)',
@@ -1053,12 +1042,137 @@ def _stubbed_getattr(
         logger.debug('Returning metaclass reftype for %s.', to_reference)
         return make_metaclass_crossreffed(module=module_name, name=name)
 
+    elif special_reftype is ReftypeMarker.DECORATOR:
+        logger.debug(
+            'Returning first-order decorator reftype for %s.', to_reference)
+        return make_decorator_crossreffed(module=module_name, name=name)
+
+    elif special_reftype is ReftypeMarker.DECORATOR_SECOND_ORDER:
+        logger.debug(
+            'Returning second-order decorator reftype for %s.', to_reference)
+        return make_decorator_2o_crossreffed(module=module_name, name=name)
+
     else:
-        # This is just blocked on having a decorator flavor added to
-        # reftypes. Should be straightforward, but I want to limit the scope
-        # of the current code push to just a refactor.
         raise NotImplementedError(
             'Other special metaclass reftypes not yet supported.')
+
+
+class _FirstpartyTrackingModule(ModuleType):
+    """First-party tracking modules need to be re-executed for
+    every module inspection, because (by definition) the stub state
+    of at least one module (the inspectee) will have changed, and we
+    need to maintain consistent state across all modules.
+
+    However, this is non-trivial for two reasons:
+    1.. some packages, including extremely popular stdlib libraries
+        ^^like **dataclasses**^^, do super funky shenanigans with
+        importing, and (when these dependencies are exercised at
+        import time, as they are with decorators like
+        ``@dataclass``) this can break execution.
+    2.. all of the actual members of a module retain direct
+        references to the module's ``__dict__`` in the form of their
+        globals; these are bound directly and bypass any
+        ``__getattr__`` hook.
+
+    Note that this situtation **does not exist for thirdparty
+    tracking modules**, because these need not be re-executed. These
+    can be served very simply by a ``__getattr__`` hook that
+    delegates the lookup to the original module object.
+
+    What doesn't solve #1 above is:
+    ++  create a snapshot of the prepared namespace for the tracking
+        (not the delegated!) module before re-exec'ing its source
+        code
+    ++  re-exec the source code into the prepared namespace for the
+        tracking (not the delegated!) module
+    ++  copy everything added by exec into the tracking module, into
+        the delegated module
+    ++  ``clear()`` the tracking module's ``__dict__``, and then
+        restore it from the earlier snapshot
+    This breaks because of #2 above; all of the members of the
+    tracked module reference the ``__dict__`` of the tracking
+    wrapper directly, meaning anything that gets executed at import
+    time (for example, decorators) which also reference anything
+    else in the module will fail, raising ``NameError`` because it
+    fails to find the name within the module's ``__dict__`` (since
+    we would have just cleared it).
+
+    Instead, we use this ``ModuleType`` subclass to perform the
+    tracking within the module's ``__getattribute__``, thereby
+    preserving direct access to the module's ``__dict__`` while
+    still intercepting attribute access for tracking purposes
+    whenever other parts of the code import from the module.
+
+    > Re: dataclasses
+        This is a very specific edge case, but it's important to
+        understand:
+        ++  ``from __future__ import annotations`` converts all
+            annotations into strings
+        ++  dataclasses needs to look for some module-level magic
+            values as type hints, notably ``KW_ONLY``
+        ++  instead of calling the other typing-specific facilities
+            for resolving stringified type hints, dataclasses has
+            its own implementation. This manually checks for the
+            module in ``sys.modules``, and then looks directly at
+            that module's ``__dict__``. If at any time it fails a
+            lookup, it short-circuits, assuming that the stringified
+            value is irrelevant to tthe dataclass transform
+        ++  note that this bypasses the module ``__getattr__`` hook!
+
+        Therefore, for dataclasses to work, **during tracking module
+        re-exec**, the following must be true:
+        ++  there must be a module in ``sys.modules`` for the module
+            fullname we want to track
+        ++  the real imported objects have to exist in that module's
+            namespace during ``exec`` time
+        ++  those objects must be the same (literally the same, ie
+            same ``id`` and ``(x is y) is True``) as the ones
+            returned during the actual tracking imports at
+            inspection time
+        ++  the tracking module ``__dict__`` must be **missing** a
+            name in order for the ``__getattr__`` hook to have an
+            effect
+    """
+
+    def __getattribute__(self, name: str) -> Any:
+        # These need to immediately return, because, well, otherwise it'd be
+        # infinite recursion! That they bypass the debug log is ... I mean tbh
+        # it's probably also beneficial, otherwise we'd get a bunch of noise
+        # from it.
+        if name in _UNTRACKED_IMPORT_ATTRS:
+            return super().__getattribute__(name)
+
+        module_name = self.__name__
+        logger.debug(
+            'Detected attribute access at firstparty tracking module %s:%s',
+            module_name, name)
+        registry = _ACTIVE_TRACKING_REGISTRY.get(None)
+        src_object = super().__getattribute__(name)
+        obj_id = id(src_object)
+        tracked_src = (module_name, name)
+
+        if registry is None:
+            logger.debug('No tracking active for %s:%s', module_name, name)
+        else:
+            logger.debug('Tracking import for %s:%s', module_name, name)
+            # We use None to indicate that there's a conflict within the
+            # retrieval imports we've encountered, so we can't use it as a
+            # stand-in for missing stuff.
+            existing_record = registry.get(obj_id, Singleton.MISSING)
+            if existing_record is Singleton.MISSING:
+                registry[obj_id] = tracked_src
+
+            # Note: we only need to overwrite if it isn't already none;
+            # otherwise we can just skip it. None is a sink state, a black
+            # hole.
+            elif (
+                existing_record is not None
+                and existing_record is not tracked_src
+                and existing_record != tracked_src
+            ):
+                registry[obj_id] = None
+
+        return src_object
 
 
 def is_wrapped_tracking_module(
@@ -1066,7 +1180,14 @@ def is_wrapped_tracking_module(
         ) -> TypeGuard[WrappedTrackingModule]:
     return (
         isinstance(module, ModuleType)
-        and hasattr(module, '_docnote_extract_src_module'))
+        and hasattr(module, '_docnote_extract_src_module')
+    ) or isinstance(module, _FirstpartyTrackingModule)
+
+
+@dataclass
+class ExtractionMetadata:
+    tracking_registry: TrackingRegistry
+    sourcecode: str
 
 
 class _WrappedTrackingModuleBase(Protocol):
@@ -1085,7 +1206,7 @@ class WrappedTrackingModule(ModuleType, _WrappedTrackingModuleBase):
 
 
 class _ModulePostExtractionBase(Protocol):
-    _docnote_extract_import_tracking_registry: TrackingRegistry
+    __docnote_extract_metadata__: ExtractionMetadata
 
 
 class ModulePostExtraction(ModuleType, _ModulePostExtractionBase):
@@ -1096,7 +1217,7 @@ class ModulePostExtraction(ModuleType, _ModulePostExtractionBase):
     """
     # Including this to silence type errors when we create these manually for
     # testing purposes
-    _docnote_extract_import_tracking_registry: TrackingRegistry
+    __docnote_extract_metadata__: ExtractionMetadata
 
 
 def is_module_post_extraction(
@@ -1104,7 +1225,7 @@ def is_module_post_extraction(
         ) -> TypeGuard[ModulePostExtraction]:
     return (
         isinstance(module, ModuleType)
-        and hasattr(module, '_docnote_extract_import_tracking_registry'))
+        and hasattr(module, '__docnote_extract_metadata__'))
 
 
 @wraps(dataclass)
@@ -1130,3 +1251,79 @@ def _patched_dataclass_getattr(name: str):
         return _dataclass_decorator_wrapper
     else:
         return getattr(dataclasses, name)
+
+
+@dataclass
+class StubsConfig:
+    enable_stubs: bool
+
+    # Note: if this is defined, it takes precedence over the others, which are
+    # therefore ignored
+    global_allowlist: frozenset[str] | None
+    # Note: full module name
+    firstparty_blocklist: frozenset[str]
+    # Note: root package, not individual modules
+    thirdparty_blocklist: frozenset[str]
+
+    @classmethod
+    def from_gather_kwargs(
+            cls,
+            enabled_stubs: bool | Collection[str],
+            nostub_firstparty_modules: Collection[str] | None,
+            nostub_packages: Collection[str] | None,
+            ) -> StubsConfig:
+        """Does some convenience stuff to construct a stubstate from
+        the kwargs used in gathering.
+        """
+        if nostub_firstparty_modules is None:
+            nostub_firstparty_modules = frozenset()
+        else:
+            nostub_firstparty_modules = frozenset(nostub_firstparty_modules)
+        if nostub_packages is None:
+            nostub_packages = frozenset()
+        else:
+            nostub_packages = frozenset(nostub_packages)
+        if enabled_stubs is True:
+            enable_stubs = True
+            global_allowlist = None
+        elif enabled_stubs is False:
+            enable_stubs = False
+            global_allowlist = None
+        else:
+            enable_stubs = True
+            global_allowlist = frozenset(enabled_stubs)
+
+        return cls(
+            enable_stubs=enable_stubs,
+            global_allowlist=global_allowlist,
+            firstparty_blocklist=nostub_firstparty_modules,
+            thirdparty_blocklist=nostub_packages)
+
+    def use_stub_strategy(self, module_fullname: str) -> bool | None:
+        """Returns True if the passed module fullname should be stubbed,
+        False if it should be tracked, and None if it should be
+        completely bypassed.
+        """
+        package_name, _, _ = module_fullname.partition('.')
+        if (
+            # Note that package_name is correct here; stdlib doesn't add in
+            # every submodule.
+            package_name in sys.stdlib_module_names
+            or package_name in NOHOOK_PACKAGES
+        ):
+            return None
+
+        if not self.enable_stubs:
+            return False
+
+        if self.global_allowlist is None:
+            if (
+                module_fullname in self.firstparty_blocklist
+                or package_name in self.thirdparty_blocklist
+            ):
+                return False
+
+            return True
+
+        else:
+            return module_fullname in self.global_allowlist

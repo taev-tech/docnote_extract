@@ -12,6 +12,7 @@ from typing import get_type_hints
 from docnote import DocnoteConfig
 from docnote import Note
 
+from docnote_extract._extraction import ExtractionMetadata
 from docnote_extract._extraction import ModulePostExtraction
 from docnote_extract._module_tree import ConfiguredModuleTreeNode
 from docnote_extract.crossrefs import Crossref
@@ -45,7 +46,9 @@ class TestNormalizeNamespaceItem:
         test_module = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled.noteworthy'))
-        test_module._docnote_extract_import_tracking_registry = {}
+        test_module.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -87,7 +90,9 @@ class TestNormalizeNamespaceItem:
         test_module = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled.noteworthy'))
-        test_module._docnote_extract_import_tracking_registry = {}
+        test_module.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -136,7 +141,9 @@ class TestNormalizeModuleMembers:
         docnote = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testutils.fixtures'))
-        docnote._docnote_extract_import_tracking_registry = {}
+        docnote.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testutils',
             'docnote_extract_testutils',
@@ -160,7 +167,9 @@ class TestNormalizeModuleMembers:
         docnote = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled'))
-        docnote._docnote_extract_import_tracking_registry = {}
+        docnote.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -187,7 +196,9 @@ class TestNormalizeModuleMembers:
         docnote = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled'))
-        docnote._docnote_extract_import_tracking_registry = {}
+        docnote.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -217,7 +228,9 @@ class TestNormalizeModuleMembers:
         test_module = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled.noteworthy'))
-        test_module._docnote_extract_import_tracking_registry = {}
+        test_module.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -251,7 +264,9 @@ class TestNormalizeModuleMembers:
         test_module = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled.noteworthy'))
-        test_module._docnote_extract_import_tracking_registry = {}
+        test_module.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -285,7 +300,9 @@ class TestNormalizeModuleMembers:
         test_module = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled.noteworthy'))
-        test_module._docnote_extract_import_tracking_registry = {}
+        test_module.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -319,7 +336,9 @@ class TestNormalizeModuleMembers:
         test_module = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled.noteworthy'))
-        test_module._docnote_extract_import_tracking_registry = {}
+        test_module.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -351,7 +370,9 @@ class TestNormalizeModuleMembers:
         test_module = cast(
             ModulePostExtraction,
             import_module('docnote_extract_testpkg._hand_rolled.noteworthy'))
-        test_module._docnote_extract_import_tracking_registry = {}
+        test_module.__docnote_extract_metadata__ = ExtractionMetadata(
+            tracking_registry={},
+            sourcecode='')
         module_tree = ConfiguredModuleTreeNode(
             'docnote_extract_testpkg',
             'docnote_extract_testpkg',
@@ -544,7 +565,6 @@ class TestTypeSpec:
                             key='T'),))})
 
         assert isinstance(result, TypeSpec)
-        print(result.normtype)
         assert result.normtype == NormalizedConcreteType(
             primary=Crossref(
                 module_name='foo',
@@ -570,7 +590,6 @@ class TestTypeSpec:
                             key='T'),))})
 
         assert isinstance(result, TypeSpec)
-        print(result.normtype)
         assert result.normtype == NormalizedConcreteType(
             primary=Crossref(
                 module_name='tests_py.normalization_test',

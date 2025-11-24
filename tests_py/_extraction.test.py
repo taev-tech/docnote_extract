@@ -3,11 +3,15 @@ import sys
 from types import ModuleType
 from unittest.mock import patch
 
+import finnr
 import pytest
 from docnote import ReftypeMarker
 
 from docnote_extract._extraction import _MODULE_TO_INSPECT
 from docnote_extract._extraction import GLOBAL_REFTYPE_MARKERS
+from docnote_extract._extraction import ExtractionMetadata
+from docnote_extract._extraction import ModulePostExtraction
+from docnote_extract._extraction import StubsConfig
 from docnote_extract._extraction import _DelegatedLoaderState
 from docnote_extract._extraction import _ExtractionFinderLoader
 from docnote_extract._extraction import _ExtractionLoaderState
@@ -46,69 +50,100 @@ def fake_import_module(name: str) -> ModuleType:
 class TestExtractionFinderLoader:
 
     def test_stash_firstparty_or_nostub(self):
-        """_stash_firstparty_or_nostub_raw must add firstparty and
+        """_stash_raw_modules must add firstparty and
         nostub packages to the correct stash, but not others.
         """
         import this  # noqa: F401, I001
-        import pytest  # noqa: F401
+        import finnr  # noqa: F401
         import docnote_extract_testpkg  # noqa: F401
 
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
-        floader._stash_firstparty_or_nostub_raw()
-        assert 'this' not in floader.module_stash_nostub_raw
-        assert 'pytest' in floader.module_stash_nostub_raw
-        assert 'docnote_extract_testpkg' in floader.module_stash_nostub_raw
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),)
+        floader._stash_raw_modules()
+        assert 'this' not in floader.module_stash_raw
+        assert 'finnr' in floader.module_stash_raw
+        assert 'docnote_extract_testpkg' in floader.module_stash_raw
 
     @set_phase(_ExtractionPhase.EXTRACTION)
     def test_extract_firstparty(self):
-        """extract_firstparty must return a module-post-extraction, it
-        must reset the module to inspect before returning, and it must
-        remove the module from sys before and after extraction.
-
-        Additionally, it must not call ``import_module``.
+        """extract_firstparty must return a module-post-extraction and
+        it must reset the module to inspect before returning.
         """
         import docnote_extract_testpkg._hand_rolled as raw_module
         assert _MODULE_TO_INSPECT.get(None) is None
-        assert 'docnote_extract_testpkg._hand_rolled' in sys.modules
+        del sys.modules['docnote_extract_testpkg._hand_rolled']
 
-        floader = _ExtractionFinderLoader(
-            frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
-            module_stash_nostub_raw={
-                'pytest': pytest,
-                'docnote_extract_testpkg': docnote_extract_testpkg,
-                'docnote_extract_testpkg._hand_rolled': raw_module})
+        try:
+            floader = _ExtractionFinderLoader(
+                frozenset({'docnote_extract_testpkg'}),
+                stubs_config=StubsConfig(
+                    enable_stubs=True,
+                    global_allowlist=None,
+                    firstparty_blocklist=frozenset(),
+                    thirdparty_blocklist=frozenset({'finnr'})),
+                module_stash_raw={
+                    'finnr': finnr,
+                    'docnote_extract_testpkg': docnote_extract_testpkg,
+                    'docnote_extract_testpkg._hand_rolled': raw_module})
 
-        # We're going to patch this out because we want to isolate the internal
-        # behavior of the import system from the extraction function
-        with patch(
-            'docnote_extract._extraction.import_module',
-            autospec=True,
-        ) as import_module_mock:
-            result = floader.extract_firstparty(
+            mocked_module = ModulePostExtraction(
                 'docnote_extract_testpkg._hand_rolled')
+            mocked_module.__dict__.update(raw_module.__dict__)
+            mocked_module.__docnote_extract_metadata__ = ExtractionMetadata(
+                tracking_registry={},
+                sourcecode='')
 
-        assert import_module_mock.call_count == 0
-        assert is_module_post_extraction(result)
-        assert result is not raw_module
-        assert result.__name__ == 'docnote_extract_testpkg._hand_rolled'
-        assert _MODULE_TO_INSPECT.get(None) is None
-        assert 'docnote_extract_testpkg._hand_rolled' in sys.modules
-        assert sys.modules[
-            'docnote_extract_testpkg._hand_rolled'] is raw_module
+            def fake_import_module(name: str):
+                sys.modules[name] = mocked_module
+                return mocked_module
+
+            with patch(
+                'docnote_extract._extraction.import_module',
+                wraps=fake_import_module,
+                autospec=True,
+            ) as import_module_mock:
+                result = floader.extract_firstparty(
+                    'docnote_extract_testpkg._hand_rolled')
+
+            assert import_module_mock.call_count == 1
+            assert is_module_post_extraction(result)
+            assert result is not raw_module
+            assert result.__name__ == 'docnote_extract_testpkg._hand_rolled'
+            assert _MODULE_TO_INSPECT.get(None) is None
+            assert 'docnote_extract_testpkg._hand_rolled' in sys.modules
+            assert sys.modules[
+                'docnote_extract_testpkg._hand_rolled'] is not raw_module
+
+        finally:
+            sys.modules['docnote_extract_testpkg._hand_rolled'] = raw_module
 
     def test_find_spec_skips_stdlib(self):
         """find_spec() must return None for modules in the stdlib.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),)
         assert floader.find_spec('antigravity', None, None) is None
 
     def test_find_spec_skips_nohook(self):
         """find_spec() must return None for modules in the nohook set.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),)
         assert floader.find_spec('docnote', None, None) is None
 
     @set_phase(_ExtractionPhase.EXPLORATION)
@@ -118,8 +153,12 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
-        assert floader.find_spec('pytest', None, None) is None
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),)
+        assert floader.find_spec('finnr', None, None) is None
 
     @set_phase(_ExtractionPhase.EXPLORATION)
     def test_find_spec_firstparty_exploration(self):
@@ -128,7 +167,11 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}))
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),)
         assert floader.find_spec('docnote_extract_testpkg', None, None) is None
 
     @set_inspection('')
@@ -139,11 +182,15 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
-            module_stash_nostub_raw={
-                'pytest': pytest,
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),
+            module_stash_raw={
+                'finnr': finnr,
                 'docnote_extract_testpkg': docnote_extract_testpkg})
-        spec = floader.find_spec('pytest', None, None)
+        spec = floader.find_spec('finnr', None, None)
         assert spec is not None
         assert isinstance(spec.loader_state, _DelegatedLoaderState)
         assert spec.loader_state.stub_strategy == _StubStrategy.TRACK
@@ -157,9 +204,13 @@ class TestExtractionFinderLoader:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
-            module_stash_nostub_raw={
-                'pytest': pytest,
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),
+            module_stash_raw={
+                'finnr': finnr,
                 'docnote_extract_testpkg': docnote_extract_testpkg})
         spec = floader.find_spec('docnote_extract_testpkg', None, None)
         assert spec is not None
@@ -169,35 +220,40 @@ class TestExtractionFinderLoader:
 
     @set_inspection('docnote_extract_testpkg')
     @set_phase(_ExtractionPhase.EXTRACTION)
-    def test_find_spec_firstparty_extraction_under_inspection(self, caplog):
+    def test_find_spec_firstparty_extraction_under_inspection(self):
         """find_spec() must return a delegated spec for modules in the
         firstparty set during the extraction phase. If the module is
-        under inspection, it must use the STUB stub strategy, and warn
-        that the feature is not supported.
+        under inspection, it must use the INSPECT stub strategy.
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),
-            module_stash_nostub_raw={
-                'pytest': pytest,
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),
+            module_stash_raw={
+                'finnr': finnr,
                 'docnote_extract_testpkg': docnote_extract_testpkg})
 
-        caplog.clear()
         spec = floader.find_spec('docnote_extract_testpkg', None, None)
 
-        # This is a quick and dirty way of checking for the log message
-        captured_log_raw = ''.join(record.msg for record in caplog.records)
-        assert 'Direct import detected' in captured_log_raw
         assert spec is not None
         assert isinstance(spec.loader_state, _DelegatedLoaderState)
-        assert spec.loader_state.stub_strategy == _StubStrategy.STUB
+        assert spec.loader_state.stub_strategy == _StubStrategy.INSPECT
         assert spec.loader_state.is_firstparty
 
     def test_find_spec_for_stubbable(self):
         """find_spec() must return a ModuleSpec with a set
         loader_state=_ExtractionLoaderState for a stubbable module.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),)
         spec = floader.find_spec('docnote_extract_testpkg', None, None)
         assert spec is not None
         assert isinstance(spec.loader_state, _ExtractionLoaderState)
@@ -210,7 +266,13 @@ class TestExtractionFinderLoader:
         This test deliberately does as little as possible; we'll save
         the heavier lifting for an integration test.
         """
-        floader = _ExtractionFinderLoader(frozenset())
+        floader = _ExtractionFinderLoader(
+            frozenset(),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'finnr'})),)
         assert not _check_for_hook()
         floader.install()
         try:

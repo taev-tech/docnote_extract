@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from docnote_extract._extraction import StubsConfig
 from docnote_extract._extraction import _ExtractionFinderLoader
 from docnote_extract._module_tree import ConfiguredModuleTreeNode
 from docnote_extract._summarization import SummaryMetadata
@@ -39,7 +40,11 @@ class TestSummarization:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         extraction = floader.discover_and_extract()
         module_trees = ConfiguredModuleTreeNode.from_extraction(extraction)
         normalized_objs = normalize_module_dict(
@@ -86,7 +91,11 @@ class TestSummarization:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         extraction = floader.discover_and_extract()
         module_trees = ConfiguredModuleTreeNode.from_extraction(extraction)
         normalized_objs = normalize_module_dict(
@@ -133,7 +142,11 @@ class TestSummarization:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         extraction = floader.discover_and_extract()
         module_trees = ConfiguredModuleTreeNode.from_extraction(extraction)
         normalized_objs = normalize_module_dict(
@@ -187,7 +200,11 @@ class TestSummarization:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         extraction = floader.discover_and_extract()
         module_trees = ConfiguredModuleTreeNode.from_extraction(extraction)
         normalized_objs = normalize_module_dict(
@@ -223,7 +240,11 @@ class TestSummarization:
         """
         floader = _ExtractionFinderLoader(
             frozenset({'docnote_extract_testpkg'}),
-            nostub_packages=frozenset({'pytest'}),)
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
         extraction = floader.discover_and_extract()
         module_trees = ConfiguredModuleTreeNode.from_extraction(extraction)
         normalized_objs = normalize_module_dict(
@@ -264,7 +285,6 @@ class TestSummarization:
         assert sugar_sig.retval.typespec is not None
         assert isinstance(
             sugar_sig.retval.typespec.normtype, NormalizedConcreteType)
-        print(sugar_sig.retval.typespec.normtype.primary)
         assert sugar_sig.retval.typespec.normtype.primary == Crossref(
             module_name='docnote_extract_testpkg._hand_rolled.has_typevars',
             toplevel_name='uses_sugared_typevar',
