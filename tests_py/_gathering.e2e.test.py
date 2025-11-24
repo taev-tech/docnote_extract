@@ -1,4 +1,5 @@
 import pytest
+import templatey
 from docnote import ReftypeMarker
 
 from docnote_extract import Docnotes
@@ -178,3 +179,75 @@ class TestGatheringE2ETemplatey:
         (pkg_name, tree_root), = templatey_docs.summaries.items()
         assert pkg_name == 'templatey'
         assert isinstance(tree_root, SummaryTreeNode)
+
+    def test_spotcheck_bootstrapping(
+            self, templatey_docs: Docnotes[SummaryMetadata]):
+        """A spot-check of the templatey._bootstrapping module must
+        match the expected results.
+
+        Note: we've chosen the _bootstrapping module despite its
+        private-ness, because it has module-level constants that are
+        instances of imported classes, which (turns out) is a bit of a
+        stress test for extraction.
+        """
+        (_, tree_root), = templatey_docs.summaries.items()
+        module_node = tree_root.find('templatey._bootstrapping')
+        module_summary = module_node.module_summary
+        exported_names = {
+            child.name
+            for child in module_summary.members
+            if child.metadata.included}
+        assert exported_names == {
+            'EmptyTemplate',
+            # Note: this gets included because it's just a cast() of the
+            # EmptyTemplate class
+            'EMPTY_TEMPLATE_XABLE'}
+
+        all_names = {
+            child.name
+            for child in module_summary.members}
+        assert all_names == {
+            '__annotations__',
+            '__builtins__',
+            '__doc__',
+            '__docnote_extract_metadata__',
+            '__file__',
+            '__loader__',
+            '__name__',
+            '__package__',
+            '__spec__',
+            '_docnote_extract_stub_strat',
+            'ClassVar',
+            'EMPTY_INTERPOLATION_CONFIG',
+            'EMPTY_TEMPLATE_INSTANCE',
+            'EMPTY_TEMPLATE_XABLE',
+            'EmptyTemplate',
+            'InterpolationConfig',
+            'NamedInterpolator',
+            'NormalizedFieldset',
+            'PARSED_EMPTY_TEMPLATE',
+            'ParsedTemplateResource',
+            'TemplateConfig',
+            'TemplateIntersectable',
+            'annotations',
+            'cast',
+            'template'}
+
+    def test_spotcheck_templatey(
+            self, templatey_docs: Docnotes[SummaryMetadata]):
+        """A spot-check of the templatey module must
+        match the expected results.
+
+        Note: we've chosen the root templatey module because it
+        re-exports a bunch of other stuff. This exercises both the
+        filtering logic as well as making sure that things don't break
+        when we re-export stuff.
+        """
+        (_, tree_root), = templatey_docs.summaries.items()
+        module_node = tree_root.find('templatey')
+        module_summary = module_node.module_summary
+        exported_names = {
+            child.name
+            for child in module_summary.members
+            if child.metadata.included}
+        assert exported_names == set(templatey.__all__)
