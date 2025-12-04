@@ -72,3 +72,9 @@ class ClassWithProperty:
         assigned as the typespec, and this docstring as the note.
         """
         ...
+
+
+@docnote(DocnoteConfig(id_='my_explicit_id'))
+class ClassWithStableId:
+    """This class has an explicit docnote ID attached to it.
+    """

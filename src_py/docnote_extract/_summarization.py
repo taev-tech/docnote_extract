@@ -16,6 +16,7 @@ from typing import TypeVar
 from typing import cast
 from typing import get_overloads
 from typing import get_type_hints
+from uuid import UUID
 
 from docnote import DOCNOTE_CONFIG_ATTR
 from docnote import DocnoteConfig
@@ -105,6 +106,7 @@ class _SummaryFactoryProtocol[T: SummaryBase](Protocol):
 class SummaryMetadata(SummaryMetadataProtocol):
     """The default implementation for summary metadata.
     """
+    id_: str | int | UUID | None
     extracted_inclusion: bool | None
     canonical_module: str | None
     to_document: bool
@@ -171,6 +173,7 @@ def summarize_module[T: SummaryMetadataProtocol](
         crossref=module_crossref,
         annotateds=(),
         metadata=config.metadata or {})
+    metadata.id_ = config.id_
     metadata.extracted_inclusion = config.include_in_docs
     metadata.crossref_namespace = namespace
     metadata.canonical_module = module.__name__
@@ -223,6 +226,7 @@ def create_crossref_summary(
             LazyResolvingValue.from_annotated(annotated)
             for annotated in obj.annotateds),
         metadata=obj.effective_config.metadata or {})
+    metadata.id_ = obj.effective_config.id_
     metadata.extracted_inclusion = \
         obj.effective_config.include_in_docs
     metadata.crossref_namespace = parent_crossref_namespace
@@ -267,6 +271,7 @@ def create_variable_summary(
             LazyResolvingValue.from_annotated(annotated)
             for annotated in obj.annotateds),
         metadata=obj.effective_config.metadata or {})
+    metadata.id_ = obj.effective_config.id_
     metadata.extracted_inclusion = \
         obj.effective_config.include_in_docs
     metadata.crossref_namespace = parent_crossref_namespace
@@ -349,6 +354,7 @@ def create_typevar_summary(
             LazyResolvingValue.from_annotated(annotated)
             for annotated in obj.annotateds),
         metadata=obj.effective_config.metadata or {})
+    metadata.id_ = obj.effective_config.id_
     metadata.extracted_inclusion = \
         obj.effective_config.include_in_docs
     metadata.crossref_namespace = parent_crossref_namespace
@@ -473,6 +479,7 @@ def _create_substitute_crossref_summary[T: SummaryMetadataProtocol](
             LazyResolvingValue.from_annotated(annotated)
             for annotated in normalized_obj.annotateds),
         metadata=normalized_obj.effective_config.metadata or {})
+    metadata.id_ = normalized_obj.effective_config.id_
     metadata.extracted_inclusion = \
         normalized_obj.effective_config.include_in_docs
     metadata.crossref_namespace = {}
@@ -589,6 +596,7 @@ def create_class_summary(
             LazyResolvingValue.from_annotated(annotated)
             for annotated in obj.annotateds),
         metadata=config.metadata or {})
+    metadata.id_ = obj.effective_config.id_
     metadata.extracted_inclusion = \
         obj.effective_config.include_in_docs
     metadata.crossref_namespace = namespace
@@ -764,6 +772,7 @@ def create_callable_summary(  # noqa: C901, PLR0912
             LazyResolvingValue.from_annotated(annotated)
             for annotated in obj.annotateds),
         metadata=obj.effective_config.metadata or {})
+    metadata.id_ = obj.effective_config.id_
     metadata.extracted_inclusion = \
         obj.effective_config.include_in_docs
     metadata.crossref_namespace = {
@@ -882,6 +891,7 @@ def _make_signature(  # noqa: PLR0913, PLR0915
             crossref=param_crossref,
             annotateds=normalized_annotation.annotateds,
             metadata=effective_config.metadata or {})
+        param_metadata.id_ = effective_config.id_
         param_metadata.extracted_inclusion = \
             effective_config.include_in_docs
         param_metadata.crossref_namespace = signature_namespace
@@ -920,6 +930,7 @@ def _make_signature(  # noqa: PLR0913, PLR0915
         crossref=retval_crossref,
         annotateds=normalized_retval_annotation.annotateds,
         metadata=retval_effective_config.metadata or {})
+    retval_metadata.id_ = retval_effective_config.id_
     retval_metadata.extracted_inclusion = \
         retval_effective_config.include_in_docs
     retval_metadata.crossref_namespace = signature_namespace
@@ -931,6 +942,7 @@ def _make_signature(  # noqa: PLR0913, PLR0915
         crossref=signature_crossref,
         annotateds=(),
         metadata=signature_config.metadata or {})
+    signature_metadata.id_ = signature_config.id_
     signature_metadata.extracted_inclusion = \
         signature_config.include_in_docs
     signature_metadata.crossref_namespace = signature_namespace
@@ -994,6 +1006,7 @@ def _make_typevar_summary_direct(
         crossref=crossref,
         annotateds=(),
         metadata={})
+    metadata.id_ = None
     metadata.extracted_inclusion = None
     metadata.crossref_namespace = parent_crossref_namespace
     metadata.canonical_module = (
