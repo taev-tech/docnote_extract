@@ -6,7 +6,7 @@ on:
 env:
   PACKAGE_NAME: docnote_extract
   PYTHON_VERSION_FOR_BUILD: 3.13
-  UV_VERSION: "0.8.6"
+  UV_VERSION: "0.9.11"
 
 jobs:
   build:
