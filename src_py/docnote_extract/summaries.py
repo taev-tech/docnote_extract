@@ -12,6 +12,7 @@ from typing import Annotated
 from typing import Any
 from typing import Protocol
 from typing import TypeVar
+from uuid import UUID
 
 from docnote import DocnoteGroup
 from docnote import MarkupLang
@@ -206,6 +207,13 @@ class DocText:
 
 
 class SummaryMetadataProtocol(Protocol):
+    id_: Annotated[
+        str | int | UUID | None,
+        Note('''This directly copies the underlying object's
+            ``DocnoteConfig.id_`` value. As noted in the ``docnote`` docs,
+            this allows library developers to have a persistent identifier
+            that outlives renaming.''')]
+
     extracted_inclusion: Annotated[
         bool | None,
         Note('''This directly copies the underlying object's

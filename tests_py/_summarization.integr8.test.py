@@ -293,3 +293,35 @@ class TestSummarization:
                 SyntacticTraversal(
                     type_=SyntacticTraversalType.TYPEVAR,
                     key='T'),))
+
+    @mocked_extraction_discovery([
+        'docnote_extract_testpkg',
+        'docnote_extract_testpkg._hand_rolled',
+        'docnote_extract_testpkg._hand_rolled.noteworthy',])
+    @purge_cached_testpkg_modules
+    def test_explicit_id(self):
+        """An object with an attached explicit ID must include it in the
+        summarized metadata.
+        """
+        floader = _ExtractionFinderLoader(
+            frozenset({'docnote_extract_testpkg'}),
+            stubs_config=StubsConfig(
+                enable_stubs=True,
+                global_allowlist=None,
+                firstparty_blocklist=frozenset(),
+                thirdparty_blocklist=frozenset({'pytest'})),)
+        extraction = floader.discover_and_extract()
+        module_trees = ConfiguredModuleTreeNode.from_extraction(extraction)
+        normalized_objs = normalize_module_dict(
+            extraction['docnote_extract_testpkg._hand_rolled.noteworthy'],
+            module_trees['docnote_extract_testpkg'])
+        mod_summary = summarize_module(
+            extraction['docnote_extract_testpkg._hand_rolled.noteworthy'],
+            normalized_objs,
+            module_trees['docnote_extract_testpkg'])
+
+        class_summary = mod_summary / GetattrTraversal('ClassWithStableId')
+        assert isinstance(class_summary, ClassSummary)
+
+        assert class_summary.metadata.id_ is not None
+        assert class_summary.metadata.id_ == 'my_explicit_id'
