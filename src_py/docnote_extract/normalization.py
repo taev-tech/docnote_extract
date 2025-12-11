@@ -66,6 +66,9 @@ def normalize_namespace_item(
     """Given a single item from a namespace (ie, **not a module**), this
     creates a NormalizedObj and returns it.
     """
+    logger.debug(
+        'Normalizing namespace item w/ crossref %s (%s=%s)',
+        crossref, name_in_parent, value)
     raw_annotation = parent_annotations.get(name_in_parent, Singleton.MISSING)
     typevars = extend_typevars(
         parent_crossref=crossref,
@@ -135,8 +138,6 @@ def normalize_namespace_item(
 
 @dataclass(slots=True)
 class NormalizedAnnotation:
-    """
-    """
     typespec: TypeSpec | None
     notes: tuple[Note, ...]
     config_params: DocnoteConfigParams
@@ -152,6 +153,9 @@ def normalize_annotation(
     any the type hint itself, any attached notes, config params, and
     also any additional ``Annotated`` extras.
     """
+    logger.debug(
+        'Normalizing annotation %s (typevars=%s)', annotation, typevars)
+
     if annotation is Singleton.MISSING:
         return NormalizedAnnotation(
             typespec=None,
@@ -205,6 +209,7 @@ def normalize_module_dict(
                     module tree, and not just the node for the current module!
                     ''')]
         ) -> dict[str, NormalizedObj]:
+    logger.info('Normalizing module dict for %s', module.__name__)
     from_annotations: dict[str, Any] = get_type_hints(
         module, include_extras=True)
     dunder_all: set[str] = set(getattr(module, '__all__', ()))
@@ -807,8 +812,6 @@ type NormalizedType = (
 
 @dataclass(slots=True, frozen=True)
 class LazyResolvingValue:
-    """
-    """
     _crossref: Crossref | None
     _value: Literal[Singleton.MISSING] | Any
 
