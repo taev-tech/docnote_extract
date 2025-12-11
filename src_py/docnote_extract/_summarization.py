@@ -143,6 +143,7 @@ def summarize_module[T: SummaryMetadataProtocol](
     normalized_objs and extracts their summaries, returning them
     combined into a single ``ModuleSummary``.
     """
+    logger.info('Creating extraction summary object for %s', module.__name__)
     module_crossref = Crossref(
         module_name=module.__name__,
         toplevel_name=None)
@@ -411,6 +412,10 @@ def _summarize_namespace_member[T: SummaryMetadataProtocol](  # noqa: PLR0913
     else:
         crossref = parent_crossref / GetattrTraversal(attr_name)
         parent_namespace[attr_name] = crossref
+
+    logger.debug(
+        'Summarizing namespace member for crossref=%s (module %s)',
+        crossref, module_name)
 
     # This seems, at first glance, to be weird. Like, how can we have a
     # module here? Except if you do ``import foo``... welp, now you have

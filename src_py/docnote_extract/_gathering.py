@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from docnote_extract.summaries import ModuleSummary
 from docnote_extract.summaries import SummaryBase
 from docnote_extract.summaries import SummaryMetadataFactoryProtocol
 from docnote_extract.summaries import SummaryMetadataProtocol
+
+logger = logging.getLogger(__name__)
 
 
 @overload
@@ -285,6 +288,8 @@ def gather[T: SummaryMetadataProtocol](
             SummaryTreeNode.from_configured_module_tree(
                 configured_tree,
                 summary_lookup)
+
+        logger.debug('Applying filtering rules for package %s', pkg_name)
         filter_module_summaries(summary_tree, configured_tree)
 
     return Docnotes(summaries)

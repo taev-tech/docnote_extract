@@ -80,6 +80,8 @@ def eager_import_submodules(
     for __, submodule_name_rel, is_package in iter_modules(module.__path__):
         submodule_name_abs = f'{parent_package_name}.{submodule_name_rel}'
 
+        logger.debug(
+            'Importing module %s for submodule discovery', submodule_name_abs)
         try:
             submodule = import_module(submodule_name_abs)
         except ModuleNotFoundError:
