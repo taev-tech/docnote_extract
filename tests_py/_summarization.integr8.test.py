@@ -258,6 +258,10 @@ class TestSummarization:
         tv_summary = mod_summary / GetattrTraversal('_ModuleTypeVar')
         modvar_summary = mod_summary / GetattrTraversal('uses_module_typevar')
         sugar_summary = mod_summary / GetattrTraversal('uses_sugared_typevar')
+        superclassed_summary = mod_summary / GetattrTraversal(
+            'HasTypevarSuperclass')
+        dataclassed_summary = mod_summary / GetattrTraversal(
+            'SlotsDataclassWithTypevar')
 
         assert isinstance(tv_summary, TypeVarSummary)
         assert tv_summary.name == '_ModuleTypeVar'
@@ -293,6 +297,17 @@ class TestSummarization:
                 SyntacticTraversal(
                     type_=SyntacticTraversalType.TYPEVAR,
                     key='T'),))
+
+        # TODO: we need to add support for actually extracting the value for
+        # the generics here; currently it is lost. See:
+        # https://github.com/python/typing/issues/777#issuecomment-761849974
+        assert isinstance(superclassed_summary, ClassSummary)
+        # Note: dict, generic, object.
+        assert len(superclassed_summary.bases) == 3
+
+        assert isinstance(dataclassed_summary, ClassSummary)
+        val_summary = dataclassed_summary / GetattrTraversal('val')
+        assert isinstance(val_summary, VariableSummary)
 
     @mocked_extraction_discovery([
         'docnote_extract_testpkg',
