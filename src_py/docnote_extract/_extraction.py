@@ -314,7 +314,7 @@ class _ExtractionFinderLoader(Loader):
         override done as part of inspection, lest we encounter circular
         imports.
         """
-        logger.info('Re-exec-ing module for tracking: %s', module_name)
+        logger.debug('Re-exec-ing module for tracking: %s', module_name)
 
         # We need to first undo any changes we might have made to
         # the type checking flag as part of re-execing the current
@@ -493,7 +493,7 @@ class _ExtractionFinderLoader(Loader):
 
     def _unstash_prehook_modules(self):
         for name, module in self.module_stash_prehook.items():
-            logger.info('Restoring prehook module %s', name)
+            logger.debug('Restoring prehook module %s', name)
             sys.modules[name] = module
 
     def _prepare_stub_or_tracking_module(
@@ -761,7 +761,7 @@ class _ExtractionFinderLoader(Loader):
             real_module = loader_state.delegated_module
 
             if loader_state.stub_strategy is _StubStrategy.TRACK:
-                logger.info(
+                logger.debug(
                     'Wrapping module w/ tracking proxy: %s',
                     loader_state.fullname)
                 module = cast(WrappedTrackingModule, module)
