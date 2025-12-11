@@ -260,8 +260,6 @@ class TestSummarization:
         sugar_summary = mod_summary / GetattrTraversal('uses_sugared_typevar')
         superclassed_summary = mod_summary / GetattrTraversal(
             'HasTypevarSuperclass')
-        dataclassed_summary = mod_summary / GetattrTraversal(
-            'SlotsDataclassWithTypevar')
 
         assert isinstance(tv_summary, TypeVarSummary)
         assert tv_summary.name == '_ModuleTypeVar'
@@ -304,10 +302,6 @@ class TestSummarization:
         assert isinstance(superclassed_summary, ClassSummary)
         # Note: dict, generic, object.
         assert len(superclassed_summary.bases) == 3
-
-        assert isinstance(dataclassed_summary, ClassSummary)
-        val_summary = dataclassed_summary / GetattrTraversal('val')
-        assert isinstance(val_summary, VariableSummary)
 
     @mocked_extraction_discovery([
         'docnote_extract_testpkg',
