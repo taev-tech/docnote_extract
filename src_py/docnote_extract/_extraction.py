@@ -932,8 +932,6 @@ def _activatate_tracking_registry(registry: TrackingRegistry):
 
 @dataclass(slots=True, kw_only=True)
 class _ExtractionLoaderState:
-    """
-    """
     fullname: str
     is_firstparty: bool
     stub_strategy: _StubStrategy

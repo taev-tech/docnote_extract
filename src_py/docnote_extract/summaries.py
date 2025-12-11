@@ -39,8 +39,6 @@ class Singleton(Enum):
 
 @dataclass(slots=True)
 class ObjClassification:
-    """
-    """
     is_reftype: bool
     has_traversals: bool | None
     is_module: bool
@@ -200,8 +198,6 @@ class ParamStyle(Enum):
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class DocText:
-    """
-    """
     value: str
     markup_lang: str | MarkupLang | None
 
@@ -353,8 +349,6 @@ type NamespaceMemberSummary[T: SummaryMetadataProtocol] = (
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class SummaryBase[T: SummaryMetadataProtocol](_SummaryBaseProtocol[T]):
-    """
-    """
     crossref: Crossref | None
     ordering_index: int | None
     child_groups: Annotated[
@@ -373,8 +367,6 @@ class SummaryBase[T: SummaryMetadataProtocol](_SummaryBaseProtocol[T]):
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class ModuleSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
-    """
-    """
     name: Annotated[str, Note('The module fullname, ex ``foo.bar.baz``.')]
     dunder_all: frozenset[str] | None
     docstring: DocText | None
@@ -493,8 +485,6 @@ class VariableSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class ClassSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
-    """
-    """
     name: str
     docstring: DocText | None
     metaclass: Annotated[
@@ -544,8 +534,6 @@ class ClassSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class CallableSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
-    """
-    """
     name: str
     docstring: Annotated[
             DocText | None,
@@ -683,8 +671,6 @@ class SignatureSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class ParamSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
-    """
-    """
     name: str
     index: int
     style: ParamStyle
@@ -709,8 +695,6 @@ class ParamSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class RetvalSummary[T: SummaryMetadataProtocol](SummaryBase[T]):
-    """
-    """
     typespec: Annotated[
         TypeSpec | None,
         Note('''Note that a value of ``None`` indicates that no type hint was
