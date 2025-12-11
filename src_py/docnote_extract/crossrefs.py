@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from typing import TypeVar
 from typing import overload
 
 from docnote import Note
+
+logger = logging.getLogger(__name__)
 
 
 class SyntacticTraversalType(Enum):
@@ -154,8 +157,8 @@ class Crossref:
             if obj in typevars:
                 return typevars[obj]
             else:
-                raise ValueError(
-                    'Cannot create a typespec for an unknown type variable!',
+                logger.warning(
+                    'Cannot create a typespec for an unknown type variable %s',
                     obj)
 
         if (
@@ -176,13 +179,12 @@ class Crossref:
                 toplevel_name=obj.__name__,
                 traversals=())
 
+        if allow_fallback:
+            return cls.make_fallback(obj)
         else:
-            if allow_fallback:
-                return cls.make_fallback(obj)
-            else:
-                raise TypeError(
-                    'Cannot create a crossref from that object without '
-                    + 'further information!', obj)
+            raise TypeError(
+                'Cannot create a crossref from that object without '
+                + 'further information!', obj)
 
     @classmethod
     def make_fallback(
